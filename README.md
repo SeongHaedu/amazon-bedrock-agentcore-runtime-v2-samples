@@ -2,7 +2,8 @@ English | [Japanese](README_JA.md)
 
 # Amazon Bedrock AgentCore Runtime V2: platformVersion Samples
 
-ℹ️ Note: This repository is not provided by AWS. It is a sample based on verification in one personal environment. Use it as a reference.
+> [!NOTE]
+> This repository is not provided by AWS. It is a sample based on verification in one personal environment. Use it as a reference.
 
 Sample code for trying out platform version V2 of Amazon Bedrock AgentCore Runtime. V2 starts your agent by restoring a snapshot of the environment, so cold starts stay consistent regardless of image size or concurrency. You enable it per agent runtime by setting `platformVersion` to `V2`; the default is `V1`.
 
@@ -60,7 +61,8 @@ You specify `platformVersion` the same way for both modes. Only the artifact dif
 - For Container: Docker with `docker buildx`, and an ECR repository. AgentCore Runtime microVMs run ARM64 Linux.
 - For CodeZip: an existing S3 bucket.
 
-> Note: AWS CloudFormation and the AWS CDK do not currently support setting `platformVersion`. Use the AWS SDK, the AWS CLI, or the console.
+> [!NOTE]
+> AWS CloudFormation and the AWS CDK do not currently support setting `platformVersion`. Use the AWS SDK, the AWS CLI, or the console.
 
 ## Setup
 

@@ -2,7 +2,8 @@
 
 # Amazon Bedrock AgentCore Runtime V2: platformVersion サンプル
 
-ℹ️ 注意: 本リポジトリは AWS 公式が提供するものではなく、あくまで個人の環境での検証結果に基づいたサンプルです。参考としてご利用ください。
+> [!NOTE]
+> 本リポジトリは AWS 公式が提供するものではなく、あくまで個人の環境での検証結果に基づいたサンプルです。参考としてご利用ください。
 
 Amazon Bedrock AgentCore Runtime (以下 AgentCore Runtime) のプラットフォームバージョン V2 を試すためのサンプルコードです。V2 は環境をスナップショットから復元して起動するため、イメージサイズや同時実行数に関係なくコールドスタートが一定に収まります。有効化はエージェントランタイムごとに `platformVersion` を `V2` にするのみで、既定値は `V1` です。
 
@@ -60,7 +61,8 @@ Amazon Bedrock AgentCore Runtime (以下 AgentCore Runtime) のプラットフ�
 - Container で試す場合は、`docker buildx` が使える Docker と ECR リポジトリが必要です。AgentCore Runtime の microVM は ARM64 Linux です。
 - CodeZip で試す場合は、既存の S3 バケットが必要です。
 
-> 注意: AWS CloudFormation と AWS CDK は現時点で `platformVersion` の設定に対応していません。AWS SDK、AWS CLI、またはマネジメントコンソールをご利用ください。
+> [!NOTE]
+> AWS CloudFormation と AWS CDK は現時点で `platformVersion` の設定に対応していません。AWS SDK、AWS CLI、またはマネジメントコンソールをご利用ください。
 
 ## セットアップ
 
