@@ -64,6 +64,51 @@ Amazon Bedrock AgentCore Runtime (以下 AgentCore Runtime) のプラットフ�
 > [!NOTE]
 > AWS CloudFormation と AWS CDK は現時点で `platformVersion` の設定に対応していません。AWS SDK、AWS CLI、またはマネジメントコンソールをご利用ください。
 
+## 前提リソースの作成
+
+実行ロール、ECR リポジトリ、S3 バケットはご自身で用意します。本リポジトリのスクリプトはこれらを作成しません。
+
+ECR リポジトリ (Container で試す場合):
+
+```bash
+aws ecr create-repository --repository-name agentcore-runtime-v2-samples --region $AWS_REGION
+```
+
+S3 バケット (CodeZip で試す場合):
+
+```bash
+aws s3 mb s3://<bucket-name> --region $AWS_REGION
+```
+
+実行ロールは AgentCore Runtime がエージェントを動かすために引き受けるロールです。信頼ポリシーは次のとおりです。
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeRolePolicy",
+      "Effect": "Allow",
+      "Principal": { "Service": "bedrock-agentcore.amazonaws.com" },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": { "aws:SourceAccount": "<account-id>" },
+        "ArnLike": { "aws:SourceArn": "arn:aws:bedrock-agentcore:<region>:<account-id>:*" }
+      }
+    }
+  ]
+}
+```
+
+権限ポリシーの全文と最新の要件は [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html) をご確認ください。Container と CodeZip で必要な内容が異なります。本リポジトリの手順で使うのは次の 4 つです。
+
+- CloudWatch Logs への書き込み。手順 7 の内訳分解はこのログを読みます。
+- Bedrock モデルの呼び出し (`bedrock:InvokeModel`、`bedrock:InvokeModelWithResponseStream`)。`agent-bench` がモデルを呼びます。
+- ECR からのイメージ取得 (`ecr:BatchGetImage`、`ecr:GetDownloadUrlForLayer`、`ecr:GetAuthorizationToken`)。Container で試す場合に必要です。
+- X-Ray と CloudWatch メトリクスへの送信。ドキュメントのポリシーに含まれています。
+
+ZIP を置いた S3 バケットの読み取り権限は、ドキュメントの CodeZip 用ポリシーには含まれていません。アーティファクトの取得はサービス側が行います。
+
 ## セットアップ
 
 ```bash

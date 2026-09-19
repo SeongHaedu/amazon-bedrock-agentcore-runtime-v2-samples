@@ -64,6 +64,51 @@ You specify `platformVersion` the same way for both modes. Only the artifact dif
 > [!NOTE]
 > AWS CloudFormation and the AWS CDK do not currently support setting `platformVersion`. Use the AWS SDK, the AWS CLI, or the console.
 
+## Create the prerequisite resources
+
+You provide the execution role, the ECR repository and the S3 bucket yourself. The scripts in this repository do not create them.
+
+ECR repository (for Container):
+
+```bash
+aws ecr create-repository --repository-name agentcore-runtime-v2-samples --region $AWS_REGION
+```
+
+S3 bucket (for CodeZip):
+
+```bash
+aws s3 mb s3://<bucket-name> --region $AWS_REGION
+```
+
+The execution role is the role AgentCore Runtime assumes to run your agent. Its trust policy is the following.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AssumeRolePolicy",
+      "Effect": "Allow",
+      "Principal": { "Service": "bedrock-agentcore.amazonaws.com" },
+      "Action": "sts:AssumeRole",
+      "Condition": {
+        "StringEquals": { "aws:SourceAccount": "<account-id>" },
+        "ArnLike": { "aws:SourceArn": "arn:aws:bedrock-agentcore:<region>:<account-id>:*" }
+      }
+    }
+  ]
+}
+```
+
+For the full permissions policy and the current requirements, see [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html). Container and CodeZip need different sets. These four are what the steps in this repository exercise:
+
+- Writing to CloudWatch Logs. The breakdown in Step 7 reads those logs.
+- Invoking Bedrock models (`bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`). `agent-bench` calls a model.
+- Pulling the image from ECR (`ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:GetAuthorizationToken`). Needed for Container.
+- Sending X-Ray traces and CloudWatch metrics. Both are part of the policy in the documentation.
+
+Read access to the S3 bucket holding the ZIP is not part of the CodeZip policy in the documentation. The service fetches the artifact itself.
+
 ## Setup
 
 ```bash
