@@ -13,11 +13,10 @@ Blog post (Japanese): TBD
 ```
 .
 ├── agent-basic/                 Minimal agent. Prints module-scope and handler markers.
-│   ├── main.py
-│   └── Dockerfile
 ├── agent-globalinit-probe/      Probe agent. Global init vs lazy init, 10 s each.
-│   ├── main.py
-│   └── Dockerfile
+├── agent-bench/                 Benchmark target. Strands + Bedrock, streaming, timing markers.
+│                                Each agent dir holds main.py, Dockerfile and requirements.txt.
+│                                The Dockerfile and the ZIP builder read the same requirements.txt.
 ├── scripts/
 │   ├── common.py                Shared config and helpers. Reads all settings from env vars.
 │   ├── check_sdk_version.py     Verify the installed SDK supports platformVersion. No AWS calls.
@@ -28,6 +27,12 @@ Blog post (Japanese): TBD
 │   ├── invoke_runtime.py        Invoke with fresh sessions and compare against session reuse.
 │   ├── probe_globalinit.py      Burst-invoke the probe agent to see where startup work lands.
 │   └── cleanup_runtimes.py      Delete only runtimes matching the name prefix.
+├── benchmark/
+│   ├── apply_config.py          Apply artifact / env / platformVersion in one update, timing READY.
+│   ├── tps_bench_open.py        Open-loop load generator. Reports the TPS it actually achieved.
+│   ├── build_breakdown.py       Join client records with [ENTRYPOINT_REACHED] from CloudWatch Logs.
+│   ├── plot_preentry.py         Render the pre-entrypoint distribution chart.
+│   └── requirements.txt         matplotlib / numpy / scipy
 ├── requirements.txt             boto3>=1.43.95
 └── results/                     JSON output from every script (gitignored)
 ```
@@ -201,6 +206,83 @@ On V2, the 10 seconds of global initialization does not appear in any invoke. It
 Do the same against a V1 runtime built from the same image and send enough concurrent sessions to exhaust the pre-warmed instances that V1 container deployments keep per endpoint (see [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA)). There the global initialization does show up on the request path.
 
 Note what else the probe reports. `baked.wall_clock` is the time at which module scope ran, so on V2 the gap between it and `now` grows as the snapshot ages. That is the concrete reason not to hold timestamps, credentials, random seeds, or established connections at module scope on V2. See [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html).
+
+## Step 8: Measure cold start yourself
+
+This reproduces the distribution chart: four series (CodeZip / Container × V1 / V2), 100 new sessions each. It creates real runtimes, invokes them, and reads CloudWatch Logs.
+
+```bash
+pip install -r benchmark/requirements.txt
+```
+
+### Build the benchmark agent and create one runtime per deployment mode
+
+`agent-bench` calls Bedrock through Strands and streams the response. It prints `[MODULE_START]`, `[MODULE_END]`, `[ENTRYPOINT_REACHED]` and `[FIRST_TOKEN]`, which is what makes the breakdown possible.
+
+```bash
+export BENCH_IMAGE=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:bench
+
+docker buildx build --platform linux/arm64 -t $BENCH_IMAGE --push agent-bench/
+AGENTCORE_CONTAINER_URI=$BENCH_IMAGE python scripts/create_runtime.py bench_container container omit
+
+python scripts/setup_codezip_artifact.py agent-bench
+python scripts/create_runtime.py bench_codezip codezip omit
+```
+
+Create both on V1 first. You will switch them to V2 and back, so that every series runs on the same artifact, Region, role and environment variables.
+
+Note the ids and ARNs from the output, then export them.
+
+```bash
+export AGENTCORE_BENCH_CONTAINER_RUNTIME_ID=<container runtime id>
+export AGENTCORE_BENCH_CODEZIP_RUNTIME_ID=<codezip runtime id>
+ARN_CT=<container runtime arn>
+ARN_CZ=<codezip runtime arn>
+```
+
+If your Region has no cross-Region inference profile with the `us.` prefix (`ap-northeast-1`, for example), pass a Region-local profile when you create the runtimes: add `BEDROCK_MODEL_ID` to the environment variables, or set it later with `benchmark/apply_config.py`.
+
+### Measure V2, then switch back to V1 and measure again
+
+```bash
+# V2
+python benchmark/apply_config.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   keep V2 none codezip_v2_open
+python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V2 none container_v2_open
+python benchmark/tps_bench_open.py $ARN_CZ codezip_v2_open   5 20
+python benchmark/tps_bench_open.py $ARN_CT container_v2_open 5 20
+
+# V1. Wait 150 s after the switch so that the pre-warmed instances are replenished;
+# otherwise you measure a V1 that has no warm capacity and overstate the cold side.
+python benchmark/apply_config.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   keep V1 none codezip_v1_open && sleep 150
+python benchmark/tps_bench_open.py $ARN_CZ codezip_v1_open 5 20
+python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V1 none container_v1_open && sleep 150
+python benchmark/tps_bench_open.py $ARN_CT container_v1_open 5 20
+```
+
+Check the `実効 TPS` line each run. If it is far below the target, the load generator is being throttled by something on your side and the V1 numbers will look better than they are — see the note in `benchmark/tps_bench_open.py`.
+
+Switching to V2 takes minutes because the snapshot is prepared; switching back to V1 takes seconds.
+
+### Break down the latency and render the chart
+
+```bash
+# Wait about 2 minutes after the last run. Logs Insights needs time to ingest.
+python benchmark/build_breakdown.py open
+python benchmark/plot_preentry.py open
+```
+
+`build_breakdown.py` joins each client record with the `[ENTRYPOINT_REACHED]` timestamp by `session_id` and writes `results/breakdown_open.json`. It fails loudly if any request cannot be matched, rather than dropping it and skewing the distribution. `plot_preentry.py` writes `benchmark/images/coldstart_distribution_preentry_open.png`.
+
+### Optional: make module-scope initialization heavy
+
+Set `GLOBAL_INIT_SECS` to add a sleep at module scope. On V1 it lands on the request path; on V2 it is spent once while the snapshot is prepared.
+
+```bash
+python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V2 25 container_v2_gs25
+python benchmark/tps_bench_open.py $ARN_CT container_v2_gs25 5 20
+```
+
+Keep the value below 120. The container must report healthy within 120 seconds of startup, and this sleep runs before the server starts listening.
 
 ## Cleanup
 

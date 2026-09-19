@@ -27,12 +27,29 @@ ZIP_PATH = REPO_ROOT / "build" / "agent-codezip.zip"
 # AgentCore Runtime の実行環境に合わせる。CODE_RUNTIME が PYTHON_3_11 なので 3.11 を指定する。
 PLATFORM = "manylinux2014_aarch64"
 PYTHON_VERSION = "3.11"
-DEPENDENCIES = ["bedrock-agentcore"]
+# 依存は対象ディレクトリの requirements.txt から読む。Dockerfile も同じファイルを参照するため、
+# コンテナと ZIP で依存がずれない。ファイルが無い場合のフォールバックだけここで持つ。
+FALLBACK_DEPENDENCIES = ["bedrock-agentcore"]
 
 USAGE = "usage: python scripts/setup_codezip_artifact.py <agent-dir>"
 
 
-def vendor_dependencies():
+def resolve_dependencies(agent_dir):
+    req = agent_dir / "requirements.txt"
+    if not req.exists():
+        print(f"{req} が無いため既定の依存を使う: {FALLBACK_DEPENDENCIES}", flush=True)
+        return FALLBACK_DEPENDENCIES
+    deps = [
+        line.strip()
+        for line in req.read_text().splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not deps:
+        raise SystemExit(f"{req} に依存が 1 件も書かれていない。")
+    return deps
+
+
+def vendor_dependencies(dependencies):
     if BUILD_DIR.exists():
         shutil.rmtree(BUILD_DIR)
     BUILD_DIR.mkdir(parents=True)
@@ -57,7 +74,7 @@ def vendor_dependencies():
         "--no-compile",
         "--target",
         str(BUILD_DIR),
-        *DEPENDENCIES,
+        *dependencies,
     ]
     print(" ".join(command), flush=True)
     subprocess.run(command, check=True)
@@ -99,7 +116,8 @@ def main():
         "zip のアップロード先に使う既存の S3 バケット名を設定する。",
     )
 
-    vendor_dependencies()
+    dependencies = resolve_dependencies(agent_dir)
+    vendor_dependencies(dependencies)
     size = build_zip(agent_dir)
     print(f"built: {ZIP_PATH} ({size} bytes)", flush=True)
 
@@ -117,7 +135,7 @@ def main():
             "s3_prefix": S3_PREFIX,
             "platform": PLATFORM,
             "python_version": PYTHON_VERSION,
-            "dependencies": DEPENDENCIES,
+            "dependencies": dependencies,
         },
     )
 

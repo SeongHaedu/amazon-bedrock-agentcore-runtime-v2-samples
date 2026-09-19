@@ -2,7 +2,9 @@ FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
 WORKDIR /app
 
-RUN uv pip install --system --no-cache bedrock-agentcore
+# 依存は requirements.txt で管理する。scripts/setup_codezip_artifact.py も同じファイルを読む。
+COPY requirements.txt ./
+RUN uv pip install --system --no-cache -r requirements.txt
 
 COPY main.py ./
 

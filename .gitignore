@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 build/
 results/
+benchmark/images/

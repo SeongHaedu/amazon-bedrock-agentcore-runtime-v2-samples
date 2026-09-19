@@ -13,11 +13,10 @@ Amazon Bedrock AgentCore Runtime のプラットフォームバージョン V2 �
 ```
 .
 ├── agent-basic/                 最小のエージェント。モジュールスコープとハンドラのマーカーを出力する。
-│   ├── main.py
-│   └── Dockerfile
 ├── agent-globalinit-probe/      プローブ用エージェント。グローバル初期化と遅延初期化を各 10 秒置く。
-│   ├── main.py
-│   └── Dockerfile
+├── agent-bench/                 計測対象。Strands + Bedrock でストリーミングし、計時マーカーを出力する。
+│                                各ディレクトリに main.py と Dockerfile と requirements.txt を置く。
+│                                Dockerfile と ZIP 生成は同じ requirements.txt を読む。
 ├── scripts/
 │   ├── common.py                共通の設定とヘルパー。設定はすべて環境変数から読む。
 │   ├── check_sdk_version.py     導入済み SDK の platformVersion 対応を確認する。AWS を呼ばない。
@@ -28,6 +27,12 @@ Amazon Bedrock AgentCore Runtime のプラットフォームバージョン V2 �
 │   ├── invoke_runtime.py        新規セッションで呼び出し、セッション再利用と比較する。
 │   ├── probe_globalinit.py      プローブを同時呼び出しし、起動時の処理の所在を観測する。
 │   └── cleanup_runtimes.py      名前プレフィックスに一致するランタイムのみを削除する。
+├── benchmark/
+│   ├── apply_config.py          artifact / 環境変数 / platformVersion を 1 回の update で適用し計時する。
+│   ├── tps_bench_open.py        開ループの負荷生成。実際に達成した TPS を出力する。
+│   ├── build_breakdown.py       クライアントの記録と CloudWatch Logs の [ENTRYPOINT_REACHED] を突き合わせる。
+│   ├── plot_preentry.py         pre-entrypoint の分布図を生成する。
+│   └── requirements.txt         matplotlib / numpy / scipy
 ├── requirements.txt             boto3>=1.43.95
 └── results/                     各スクリプトの実行結果 JSON の出力先 (.gitignore 対象)
 ```
@@ -201,6 +206,83 @@ V2 では、グローバル初期化の 10 秒はどの呼び出しにも現れ�
 同じイメージから作成した V1 のランタイムに対して同じことを行い、pre-warmed instance を枯渇させるだけの同時セッションを投げてください。その場合はグローバル初期化がリクエストの経路に現れます。V1 のコンテナデプロイがエンドポイント単位で pre-warmed instance を保持することは [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA) に記載があります。
 
 プローブが返す他の値にも注目してください。`baked.wall_clock` はモジュールスコープが実行された時刻であるため、V2 ではスナップショットが古くなるにつれて `now` との差が広がります。これが、V2 ではタイムスタンプ・認証情報・乱数シード・確立済みの接続をモジュールスコープで保持してはならない具体的な理由です。詳細は [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html) を参照してください。
+
+## 手順 8: コールドスタートを自分で測る
+
+記事の分布図を再現する手順です。CodeZip / Container × V1 / V2 の 4 系列について、それぞれ 100 件の新規セッションを投入します。実際のランタイムを作成し、呼び出し、CloudWatch Logs を読みます。
+
+```bash
+pip install -r benchmark/requirements.txt
+```
+
+### 計測対象をビルドし、デプロイ方式ごとにランタイムを作る
+
+`agent-bench` は Strands 経由で Bedrock を呼び、レスポンスをストリーミングします。`[MODULE_START]`、`[MODULE_END]`、`[ENTRYPOINT_REACHED]`、`[FIRST_TOKEN]` を出力します。この後の内訳分解はこれらのマーカーに依存します。
+
+```bash
+export BENCH_IMAGE=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:bench
+
+docker buildx build --platform linux/arm64 -t $BENCH_IMAGE --push agent-bench/
+AGENTCORE_CONTAINER_URI=$BENCH_IMAGE python scripts/create_runtime.py bench_container container omit
+
+python scripts/setup_codezip_artifact.py agent-bench
+python scripts/create_runtime.py bench_codezip codezip omit
+```
+
+どちらも先に V1 で作ります。この後で V2 に切り替えて戻すため、4 系列がすべて同じアーティファクト・リージョン・ロール・環境変数で走ります。
+
+出力に表示されるランタイム ID と ARN を控えて、環境変数に設定します。
+
+```bash
+export AGENTCORE_BENCH_CONTAINER_RUNTIME_ID=<container のランタイム ID>
+export AGENTCORE_BENCH_CODEZIP_RUNTIME_ID=<codezip のランタイム ID>
+ARN_CT=<container のランタイム ARN>
+ARN_CZ=<codezip のランタイム ARN>
+```
+
+`us.` プレフィックスのクロスリージョン推論プロファイルが存在しないリージョン (`ap-northeast-1` など) では、リージョン別のプロファイルを渡してください。ランタイム作成時に環境変数 `BEDROCK_MODEL_ID` を含めるか、後から `benchmark/apply_config.py` で設定します。
+
+### V2 で測り、V1 に戻して測る
+
+```bash
+# V2
+python benchmark/apply_config.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   keep V2 none codezip_v2_open
+python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V2 none container_v2_open
+python benchmark/tps_bench_open.py $ARN_CZ codezip_v2_open   5 20
+python benchmark/tps_bench_open.py $ARN_CT container_v2_open 5 20
+
+# V1。切り替えてから 150 秒待つ。pre-warmed instance の補充を待たずに測ると、
+# ウォームな容量が無い状態の V1 を測ることになり、コールド側を過大に見積もる。
+python benchmark/apply_config.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   keep V1 none codezip_v1_open && sleep 150
+python benchmark/tps_bench_open.py $ARN_CZ codezip_v1_open 5 20
+python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V1 none container_v1_open && sleep 150
+python benchmark/tps_bench_open.py $ARN_CT container_v1_open 5 20
+```
+
+実行ごとに `実効 TPS` の行を確認してください。目標を大きく下回っている場合、クライアント側の何かが投入を妨げており、V1 の数値が実態より良く出ます。理由は `benchmark/tps_bench_open.py` の冒頭に書いてあります。
+
+V2 への切り替えはスナップショット準備のため数分かかります。V1 への切り戻しは数秒で終わります。
+
+### レイテンシーを分解して図を生成する
+
+```bash
+# 最後の計測から 2 分程度あける。Logs Insights がログを取り込むまで待つ必要がある。
+python benchmark/build_breakdown.py open
+python benchmark/plot_preentry.py open
+```
+
+`build_breakdown.py` はクライアントの記録と `[ENTRYPOINT_REACHED]` のタイムスタンプを `session_id` で突き合わせ、`results/breakdown_open.json` を書きます。照合できないリクエストが 1 件でもあれば、黙って捨てずにエラーで停止します。捨てると分布が歪むためです。`plot_preentry.py` は `benchmark/images/coldstart_distribution_preentry_open.png` を出力します。
+
+### 任意: モジュールスコープの初期化を重くする
+
+`GLOBAL_INIT_SECS` を設定すると、モジュールスコープにスリープを挿入できます。V1 ではリクエストの経路に乗り、V2 ではスナップショット準備時に 1 回だけ消費されます。
+
+```bash
+python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V2 25 container_v2_gs25
+python benchmark/tps_bench_open.py $ARN_CT container_v2_gs25 5 20
+```
+
+値は 120 より小さく保ってください。コンテナは起動から 120 秒以内に healthy を報告する必要があり、このスリープはサーバが listen を開始する前に走ります。
 
 ## クリーンアップ
 
