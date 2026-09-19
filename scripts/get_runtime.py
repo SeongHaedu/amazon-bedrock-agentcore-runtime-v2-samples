@@ -1,8 +1,9 @@
 # get_runtime.py
-# Report the platformVersion of a runtime.
+# Report the platformVersion, the id and the ARN of a runtime.
 #
 # list_agent_runtimes does not return platformVersion, so reading the value means calling
-# get_agent_runtime per runtime.
+# get_agent_runtime per runtime. The ARN is printed alongside it because the benchmark
+# scripts and invoke_agent_runtime take the ARN rather than the id.
 #
 # usage:
 #   python scripts/get_runtime.py                       # every runtime matching the prefix
@@ -39,6 +40,8 @@ def main():
             f"agentRuntimeVersion={info['agent_runtime_version']}",
             flush=True,
         )
+        print(f"    id={runtime_id}", flush=True)
+        print(f"    arn={info['agent_runtime_arn']}", flush=True)
 
     save_result("get_runtime.json", results)
 

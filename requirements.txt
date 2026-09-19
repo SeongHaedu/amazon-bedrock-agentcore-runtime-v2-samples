@@ -1,3 +1,10 @@
 # 1.43.95 is the first public release that carries the platformVersion field.
 # Below that, the request fails with ParamValidationError before it is ever sent.
 boto3>=1.43.95
+
+# Step 7 only. build_breakdown.py needs numpy, and plot_preentry.py needs matplotlib
+# and scipy. They are listed here so that one install covers every script in the repo.
+# The chart has been verified with matplotlib 3.7.2 / numpy 1.24.3 / scipy 1.11.1.
+matplotlib>=3.7
+numpy>=1.24
+scipy>=1.11
