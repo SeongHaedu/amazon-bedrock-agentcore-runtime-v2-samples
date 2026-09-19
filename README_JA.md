@@ -2,40 +2,48 @@
 
 # Amazon Bedrock AgentCore Runtime V2: platformVersion サンプル
 
-Amazon Bedrock AgentCore Runtime のプラットフォームバージョン V2 を試すためのサンプルコードです。V2 はエージェントをスナップショットから復元して起動するため、同時実行数やイメージサイズに関係なくコールドスタートを速く一貫した状態に保ちます。エージェントランタイムごとに `platformVersion` フィールド (`V1` または `V2`) で選択し、既定値は V1 です。
+Amazon Bedrock AgentCore Runtime (以下 AgentCore Runtime) のプラットフォームバージョン V2 を試すためのサンプルコードです。V2 は環境をスナップショットから復元して起動するため、イメージサイズや同時実行数に関係なくコールドスタートが一定に収まります。有効化はエージェントランタイムごとに `platformVersion` を `V2` にするのみで、既定値は `V1` です。
 
-本リポジトリのスクリプトで、V2 ランタイムの作成、既存の V1 ランタイムから V2 への移行、プラットフォームバージョンの確認、呼び出し、そして V2 が起動時のコードの実行タイミングをどう変えるかの観測ができます。
+本リポジトリのスクリプトで、V2 ランタイムの作成、既存の V1 ランタイムから V2 への移行、プラットフォームバージョンの確認、呼び出し、そしてコールドスタートの計測ができます。
 
-ブログ記事: https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-platform-version
+解説記事: https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-platform-version
 
-![platformVersion による起動経路の違い](./images/v1_v2_startup_path.png)
+![platformVersion による起動経路の違い](./images/ja/v1_v2_startup_path.png)
+
+デプロイ方式は次のように略記します。
+
+- CodeZip: 直接コードデプロイです。ZIP を S3 に置き、AgentCore が管理する Python 環境で動かします。
+- Container: コンテナデプロイです。ARM64 のイメージを ECR に置きます。
+
+`platformVersion` の指定方法は両方式で同じで、アーティファクトの形だけが異なります。
 
 ## ディレクトリ構成
 
 ```
 .
-├── agent-basic/                 最小のエージェント。モジュールスコープとハンドラのマーカーを出力する。
-├── agent-globalinit-probe/      プローブ用エージェント。グローバル初期化と遅延初期化を各 10 秒置く。
-├── agent-bench/                 計測対象。Strands + Bedrock でストリーミングし、計時マーカーを出力する。
-│                                各ディレクトリに main.py と Dockerfile と requirements.txt を置く。
-│                                Dockerfile と ZIP 生成は同じ requirements.txt を読む。
+├── agent-basic/                 最小のエージェント。モジュールスコープとハンドラのマーカーを出力
+├── agent-bench/                 計測対象。Strands + Bedrock でストリーミングし計時マーカーを出力
+│                                各ディレクトリに main.py と Dockerfile と requirements.txt を置く
+│                                Dockerfile と ZIP 生成は同じ requirements.txt を読む
 ├── scripts/
-│   ├── common.py                共通の設定とヘルパー。設定はすべて環境変数から読む。
-│   ├── check_sdk_version.py     導入済み SDK の platformVersion 対応を確認する。AWS を呼ばない。
-│   ├── setup_codezip_artifact.py ARM64 向けの ZIP を作り S3 にアップロードする (Docker 不要)。
-│   ├── create_runtime.py        V1 / V2 / 省略でランタイムを作成し READY までを計測する。
-│   ├── switch_platform_version.py 既存ランタイムを V1 と V2 の間で切り替える。
-│   ├── get_runtime.py           get_agent_runtime で platformVersion を確認する。
-│   ├── invoke_runtime.py        新規セッションで呼び出し、セッション再利用と比較する。
-│   ├── probe_globalinit.py      プローブを同時呼び出しし、起動時の処理の所在を観測する。
-│   └── cleanup_runtimes.py      名前プレフィックスに一致するランタイムのみを削除する。
+│   ├── common.py                共通の設定とヘルパー。設定はすべて環境変数から読む
+│   ├── check_sdk_version.py     導入済み SDK の platformVersion 対応を確認 (AWS を呼ばない)
+│   ├── setup_codezip_artifact.py ARM64 向けの ZIP を作り S3 にアップロード (Docker 不要)
+│   ├── create_runtime.py        V1 / V2 / 省略でランタイムを作成し READY までを計測
+│   ├── switch_platform_version.py 既存ランタイムを V1 と V2 の間で切り替え
+│   ├── get_runtime.py           get_agent_runtime で platformVersion を確認
+│   ├── invoke_runtime.py        新規セッションで呼び出し、セッション再利用と比較
+│   └── cleanup_runtimes.py      名前プレフィックスに一致するランタイムのみを削除
 ├── benchmark/
-│   ├── apply_config.py          artifact / 環境変数 / platformVersion を 1 回の update で適用し計時する。
-│   ├── tps_bench_open.py        開ループの負荷生成。実際に達成した TPS を出力する。
-│   ├── build_breakdown.py       クライアントの記録と CloudWatch Logs の [ENTRYPOINT_REACHED] を突き合わせる。
-│   ├── plot_preentry.py         pre-entrypoint の分布図を生成する。
+│   ├── apply_config.py          artifact / 環境変数 / platformVersion を 1 回の update で適用し計時
+│   ├── tps_bench_open.py        開ループの負荷生成。実際に達成した TPS を出力
+│   ├── build_breakdown.py       クライアントの記録と CloudWatch Logs の [ENTRYPOINT_REACHED] を突合
+│   ├── plot_preentry.py         pre-entrypoint の分布図を生成
 │   └── requirements.txt         matplotlib / numpy / scipy
-├── images/                      本 README で使用する図
+├── images/
+│   ├── ja/                      日本語版の図
+│   ├── en/                      英語版の図
+│   └── commons/                 言語に依存しない図
 ├── requirements.txt             boto3>=1.43.95
 ├── build/                       ZIP 生成の作業ディレクトリ (.gitignore 対象)
 └── results/                     各スクリプトの実行結果 JSON の出力先 (.gitignore 対象)
@@ -44,13 +52,13 @@ Amazon Bedrock AgentCore Runtime のプラットフォームバージョン V2 �
 ## 前提条件
 
 - Python 3.10 以降が必要です。
-- `boto3>=1.43.95` が必要です。`platformVersion` フィールドを含む最初の公開版です。これ未満のバージョンでは、リクエストが送信される前に `ParamValidationError` で拒否されます。
+- `boto3>=1.43.95` が必要です。`platformVersion` フィールドを含む最初の公開版であり、これ未満のバージョンではリクエストが送信される前に `ParamValidationError` で拒否されます。
 - AgentCore Runtime の実行ロールが必要です。
-- V2 が利用できるリージョンで実行します。`us-east-1`、`us-east-2`、`us-west-2`、`eu-west-1`、`ap-northeast-1` の 5 つです。
-- コンテナで試す場合は、`docker buildx` が使える Docker と ECR リポジトリが必要です。AgentCore Runtime の microVM は ARM64 Linux です。
-- 直接コードデプロイで試す場合は、既存の S3 バケットが必要です。
+- V2 が利用できるリージョンで実行します。対応リージョンの最新の一覧は [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions) をご確認ください。
+- Container で試す場合は、`docker buildx` が使える Docker と ECR リポジトリが必要です。AgentCore Runtime の microVM は ARM64 Linux です。
+- CodeZip で試す場合は、既存の S3 バケットが必要です。
 
-> 注意: AWS CloudFormation と AWS CDK は現時点で `platformVersion` の設定に対応していません。AWS SDK、CLI、またはコンソールを使用してください。
+> 注意: AWS CloudFormation と AWS CDK は現時点で `platformVersion` の設定に対応していません。AWS SDK、AWS CLI、またはマネジメントコンソールをご利用ください。
 
 ## セットアップ
 
@@ -67,41 +75,32 @@ pip install -r requirements.txt
 
 ## 環境変数
 
-`AWS_REGION` は明示的に設定してください。設定しない場合は `us-west-2` が使われます。ランタイムの作成先と `cleanup_runtimes.py` が見るリージョンの両方が変わるためです。
+`AWS_REGION` は明示的に設定してください。設定しない場合は `us-west-2` が使われ、ランタイムの作成先と `cleanup_runtimes.py` が見るリージョンの両方が変わります。
 
 ```bash
 export AWS_REGION=ap-northeast-1
 export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/<execution-role>
 
-# コンテナで試す場合
+# Container で試す場合
 export AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:v2sample
 
-# 直接コードデプロイで試す場合
+# CodeZip で試す場合
 export AGENTCORE_S3_BUCKET=<bucket-name>
-export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # 省略可。これが既定値である。
+export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # 省略可。これが既定値です。
 
 # 任意
 export AWS_PROFILE=<profile>
-export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py はこのプレフィックスのみを削除する (4 文字以上)
-export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # 直接コードデプロイのランタイム
+export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py はこのプレフィックスのみを削除 (4 文字以上)
+export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # CodeZip のランタイム
 export AGENTCORE_ENTRY_POINT=main.py                     # 複数要素を渡す場合はカンマ区切り
 export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # 終端状態になるまでポーリングする上限
 export BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-6   # 同名でエージェントに渡す。agent-bench が読む。
 export AGENTCORE_ENV_EXTRA=KEY=VALUE,KEY2=VALUE2         # エージェントに渡すその他の環境変数
 ```
 
-`entryPoint` は配列です。複数の要素が必要な場合はカンマ区切りで渡します。例えば `AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"` のように指定します。
+`entryPoint` は配列です。複数の要素が必要な場合は `AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"` のようにカンマ区切りで渡します。
 
-ランタイムには常に `PYTHONUNBUFFERED=1` が設定されます。`BEDROCK_MODEL_ID` と `AGENTCORE_ENV_EXTRA` はその上に重ねられます。作成時は `scripts/create_runtime.py` が、既存ランタイムへの適用は `benchmark/apply_config.py` が反映します。カンマを含む値は `AGENTCORE_ENV_EXTRA` では渡せません。
-
-`agent-globalinit-probe` はさらに 2 つの環境変数を読みます。Dockerfile で両方を 10 秒に設定しています。
-
-```bash
-export GLOBAL_INIT_SECS=10   # モジュールスコープでのスリープ。V2 ではスナップショットに取り込まれる。
-export LAZY_INIT_SECS=10     # 各セッションの初回リクエストでのスリープ
-```
-
-`GLOBAL_INIT_SECS` は 120 より十分に小さい値に保ってください。コンテナは起動から 120 秒以内に healthy を報告する必要があり、このスリープはサーバが listen を開始する前に走ります。大きな値を設定すると、作成または更新がヘルスチェックのエラーで失敗します。
+ランタイムには常に `PYTHONUNBUFFERED=1` が設定され、`BEDROCK_MODEL_ID` と `AGENTCORE_ENV_EXTRA` はその上に重ねられます。作成時は `scripts/create_runtime.py` が、既存ランタイムへの適用は `benchmark/apply_config.py` が反映します。カンマを含む値は `AGENTCORE_ENV_EXTRA` では渡せません。
 
 ## 手順 1: SDK を確認する
 
@@ -109,11 +108,11 @@ export LAZY_INIT_SECS=10     # 各セッションの初回リクエストでの�
 python scripts/check_sdk_version.py
 ```
 
-AWS を一切呼びません。導入済みの botocore のサービスモデルを読み、`CreateAgentRuntime` と `UpdateAgentRuntime` のリクエスト側、および `GetAgentRuntime` のレスポンス側に `platformVersion` が存在するかを報告します。`GetAgentRuntime` のリクエスト側に存在しないのは仕様どおりです。`platformVersion` はレスポンス専用のフィールドです。
+AWS を一切呼びません。導入済みの botocore のサービスモデルを読み、`CreateAgentRuntime` と `UpdateAgentRuntime` のリクエスト側、および `GetAgentRuntime` のレスポンス側に `platformVersion` が存在するかを報告します。`platformVersion` はレスポンス専用のフィールドであるため、`GetAgentRuntime` のリクエスト側に存在しないのは仕様どおりです。
 
 ## 手順 2: アーティファクトを用意する
 
-### 方法 A: コンテナ
+### 方法 A: Container
 
 ```bash
 aws ecr get-login-password --region $AWS_REGION \
@@ -125,7 +124,7 @@ docker buildx build --platform linux/arm64 \
   --push agent-basic/
 ```
 
-### 方法 B: 直接コードデプロイ (Docker 不要)
+### 方法 B: CodeZip (Docker 不要)
 
 ```bash
 python scripts/setup_codezip_artifact.py agent-basic
@@ -133,11 +132,13 @@ python scripts/setup_codezip_artifact.py agent-basic
 
 依存関係を `manylinux2014_aarch64` 向けにベンダリングし、`main.py` とともに ZIP にまとめて `s3://$AGENTCORE_S3_BUCKET/$AGENTCORE_S3_PREFIX` にアップロードします。
 
-アップロード先はこの 1 つの prefix です。別のエージェントで再実行するとアーカイブが上書きされ、この prefix を指す全ランタイムが新しいエージェントを配信します。複数のエージェントを共存させる場合は、エージェントごとに `AGENTCORE_S3_PREFIX` を変えてください。手順 8 では `agent-bench` から ZIP を作ります。
+アップロード先はこの 1 つの prefix です。別のエージェントで再実行するとアーカイブが上書きされ、この prefix を指すランタイムはすべて新しいエージェントを配信します。複数のエージェントを共存させる場合は、エージェントごとに `AGENTCORE_S3_PREFIX` を変えてください。手順 7 では `agent-bench` から ZIP を作ります。
 
 ## 手順 3: V2 ランタイムを作成する
 
-![スナップショット作成の DAG (create / update)](./images/v2_snapshot_create_dag.png)
+作成または更新のときにスナップショットが作られます。AgentCore Runtime がコンテナを起動し、`/ping` が healthy を返すのを待ってから、動いている環境をスナップショットとして保存します。
+
+![スナップショット作成の DAG (create / update)](./images/ja/v2_snapshot_create_dag.png)
 
 ```bash
 python scripts/create_runtime.py basic_v2 container V2
@@ -145,7 +146,7 @@ python scripts/create_runtime.py basic_v2 container V2
 
 ZIP を作った場合は `container` を `codezip` に置き換えます。第 3 引数がプラットフォームバージョンで、`V2`、`V1`、`omit` のいずれかです。
 
-V2 の作成は環境の準備とスナップショットの取得を行うため、秒ではなく分単位の時間がかかります。スクリプトは `get_agent_runtime` をポーリングし、`READY` または `FAILED` で終わる状態になるまで待ち、各ステータス遷移を経過時間とともに表示します。
+V2 の作成は環境の準備とスナップショットの取得を伴うため、秒ではなく分単位の時間がかかります。スクリプトは `get_agent_runtime` をポーリングし、`READY` または `FAILED` で終わる状態になるまで待ち、各ステータス遷移を経過時間とともに表示します。
 
 差を自分で確認する場合は、同じアーティファクトから V1 のランタイムも作成します。
 
@@ -159,7 +160,7 @@ python scripts/create_runtime.py basic_v1 container omit
 python scripts/get_runtime.py
 ```
 
-`create_agent_runtime` と `update_agent_runtime` のレスポンスには `platformVersion` が含まれません。`get_agent_runtime` には含まれます。`list_agent_runtimes` にも含まれないため、このスクリプトはランタイムごとに `get_agent_runtime` を呼びます。
+`platformVersion` は `get_agent_runtime` のレスポンスにのみ含まれます。`create_agent_runtime`、`update_agent_runtime`、`list_agent_runtimes` のレスポンスには含まれないため、このスクリプトはランタイムごとに `get_agent_runtime` を呼びます。
 
 ご自身のコードで判定する場合は `resp.get("platformVersion", "V1")` の形で書いてください。V1 が既定値です。
 
@@ -169,7 +170,7 @@ python scripts/get_runtime.py
 python scripts/switch_platform_version.py <agentRuntimeId> V2
 ```
 
-`update_agent_runtime` は `roleArn` と `agentRuntimeArtifact` が必須であるため、スクリプトは `get_agent_runtime` で現行値を読み、そのまま引き継ぎます。`environmentVariables` も明示的に引き継ぎます。省略した場合に既存の環境変数がクリアされるかどうかがドキュメントに明記されていないためです。
+`update_agent_runtime` は `roleArn` と `agentRuntimeArtifact` が必須であるため、スクリプトは `get_agent_runtime` で現行値を読んで引き継ぎます。`environmentVariables` も明示的に引き継ぎます。省略した場合に既存の環境変数がクリアされるかどうかがドキュメントに明記されていないためです。
 
 直接確認する価値のある挙動が 2 つあります。
 
@@ -185,7 +186,9 @@ update を呼ぶ前に、ランタイムが終端状態 (`READY` または `*_FA
 
 ## 手順 6: 呼び出す
 
-![スナップショット復元の DAG (invoke)](./images/v2_snapshot_restore_dag.png)
+新しい microVM はスナップショットから復元されます。同一セッションの 2 回目以降はこの経路を通らず、エントリーポイントが直接実行されます。
+
+![スナップショット復元の DAG (invoke)](./images/ja/v2_snapshot_restore_dag.png)
 
 ```bash
 python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 3 2
@@ -193,48 +196,16 @@ python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 3 2
 
 引数はセッション数とセッションあたりの呼び出し回数です。各セッションは新しい `runtimeSessionId` を使うため、初回の呼び出しは必ず起動の経路を通ります。同一セッションの 2 回目は既存の実行環境に着地するため、起動を含まないリクエストの下限が得られます。
 
-`agent-basic` はモジュールスコープで構築した `snapshot_identity` を返します。スクリプトが最後に表示する `distinct identity uuid` の行に注目してください。
+`agent-basic` はモジュールスコープで構築した `snapshot_identity` を返します。スクリプトが最後に表示する `distinct identity uuid` の行にご注目ください。
 
-- V2 では値がまとまります。コンテナのランタイムに 3 セッションを投げた実測では 1 でした。すべてのインスタンスが同一のスナップショットから復元されています。準備済みのスナップショット 1 つで足りない規模のバーストでは 1 を超えることがあり、手順 7 の 20 並列では 2 になりました。
+- V2 では値がまとまります。Container のランタイムに 3 セッションを投げた実測では 1 でした。すべてのインスタンスが同一のスナップショットから復元されています。バーストの規模が大きい場合は 1 を超えることがあるため、常に 1 になるとは考えないでください。
 - V1 では、新しく起動した実行環境の数と一致します。それぞれが自分でモジュールスコープを実行しています。
 
-## 手順 7: 起動時の処理がどこで走るかを確認する
-
-ここが V2 でエージェントコードの書き方が変わる部分です。`agent-globalinit-probe` はモジュールスコープで 10 秒、各セッションの初回リクエストでさらに 10 秒スリープします。
-
-```bash
-docker buildx build --platform linux/arm64 \
-  -t <account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:probe \
-  --push agent-globalinit-probe/
-
-AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:probe \
-  python scripts/create_runtime.py probe_v2 container V2
-
-python scripts/probe_globalinit.py <agentRuntimeId|agentRuntimeArn> 20
-```
-
-末尾の `20` は同時に発行するセッション数です。既定値も 20 です。V1 の pre-warmed instance が枯渇する数を一度に投げてください。数が足りないと、V1 側もグローバル初期化をプールの中で済ませてしまい差が見えません。
-
-V2 では、グローバル初期化の 10 秒はどの呼び出しにも現れません。スナップショットの準備時に 1 回だけ消費されています。遅延初期化の 10 秒は、すべてのセッションの初回呼び出しに現れます。スナップショットがこれを運べないためです。
-
-同じイメージから作成した V1 のランタイムに対して同じことを行い、pre-warmed instance を枯渇させるだけの同時セッションを投げてください。その場合はグローバル初期化がリクエストの経路に現れます。V1 のコンテナデプロイがエンドポイント単位で pre-warmed instance を保持することは [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA) に記載があります。
-
-`ap-northeast-1` で 20 セッションを同時に投げた実測値は以下のとおりです。
-
-| | レイテンシー | distinct `baked` uuid |
-|---|---|---|
-| V2 | 13.6 - 14.2 秒の 1 群 | 2 / 20 |
-| V1 | 12.3 秒 x 10 件、27.6 秒 x 10 件 | 20 / 20 |
-
-V2 はすべての呼び出しが遅延初期化の 10 秒だけを負担し、グローバル初期化は負担していません。V1 は 2 群に分かれます。pre-warmed instance に着地した 10 件は遅延初期化のみ、着地しなかった 10 件は両方を負担しています。V2 の distinct が 1 ではなく 2 だったため、「ランタイムのバージョンごとにスナップショットは 1 つ」は結果の傾向として読み、保証として扱わないでください。
-
-プローブが返す他の値にも注目してください。`baked.wall_clock` はモジュールスコープが実行された時刻であるため、V2 ではスナップショットが古くなるにつれて `now` との差が広がります。これが、V2 ではタイムスタンプ・認証情報・乱数シード・確立済みの接続をモジュールスコープで保持してはならない具体的な理由です。詳細は [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html) を参照してください。
-
-## 手順 8: コールドスタートを自分で測る
+## 手順 7: コールドスタートを自分で測る
 
 記事の分布図を再現する手順です。CodeZip / Container × V1 / V2 の 4 系列について、それぞれ 100 件の新規セッションを投入します。実際のランタイムを作成し、呼び出し、CloudWatch Logs を読みます。
 
-![AgentCore Runtime cold start: platformVersion V1 vs V2 (pre-entrypoint)](./images/coldstart_distribution_v1_v2_apne1_preentry_open.png)
+![AgentCore Runtime cold start: platformVersion V1 vs V2 (pre-entrypoint)](./images/commons/coldstart_distribution_v1_v2_apne1_preentry_open.png)
 
 V2 の 2 系列はデプロイ方式に関係なく 2 秒付近の 1 つの狭いピークに収まり、Container V1 は 7 - 8 秒まで広がります。系列間で異なるのは `platformVersion` だけで、アーティファクト・リージョン・ロール・環境変数は同一です。
 
@@ -244,7 +215,7 @@ pip install -r benchmark/requirements.txt
 
 ### 計測対象をビルドし、デプロイ方式ごとにランタイムを作る
 
-`agent-bench` は Strands 経由で Bedrock を呼び、レスポンスをストリーミングします。`[MODULE_START]`、`[MODULE_END]`、`[ENTRYPOINT_REACHED]`、`[FIRST_TOKEN]` を出力します。この後の内訳分解はこれらのマーカーに依存します。
+`agent-bench` は Strands 経由で Bedrock を呼び、レスポンスをストリーミングします。`[MODULE_START]`、`[MODULE_END]`、`[ENTRYPOINT_REACHED]`、`[FIRST_TOKEN]` を出力し、この後の内訳分解はこれらのマーカーに依存します。
 
 既定のモデル ID は `us.anthropic.claude-sonnet-4-6` です。`us.` プレフィックスのクロスリージョン推論プロファイルが存在しないリージョンではこの識別子が拒否され、すべての呼び出しが `ValidationException: The provided model identifier is invalid.` で失敗します。ランタイムを作成する前に、リージョン別のプロファイルを設定してください。
 
@@ -264,7 +235,7 @@ python scripts/setup_codezip_artifact.py agent-bench
 python scripts/create_runtime.py bench_codezip codezip omit
 ```
 
-どちらも先に V1 で作ります。この後で V2 に切り替えて戻すため、4 系列がすべて同じアーティファクト・リージョン・ロール・環境変数で走ります。
+どちらも先に V1 で作ります。この後で V2 に切り替えて戻すことで、4 系列がすべて同じアーティファクト・リージョン・ロール・環境変数で走ります。
 
 出力に表示されるランタイム ID と ARN を控えて、環境変数に設定します。
 
@@ -292,9 +263,9 @@ python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V1 n
 python benchmark/tps_bench_open.py $ARN_CT container_v1_open 5 20
 ```
 
-実行ごとに `effective TPS` の行を確認してください。目標を大きく下回っている場合、クライアント側の何かが投入を妨げており、V1 の数値が実態より良く出ます。理由は `benchmark/tps_bench_open.py` の冒頭に書いてあります。
+実行ごとに `effective TPS` の行をご確認ください。目標を大きく下回っている場合、クライアント側の何かが投入を妨げており、V1 の数値が実態より良く出ます。理由は `benchmark/tps_bench_open.py` の冒頭に記載しています。
 
-V2 への切り替えはスナップショット準備のため数分かかります。V1 への切り戻しは数秒で終わります。
+V2 への切り替えはスナップショット準備のため数分、V1 への切り戻しは数秒で終わります。
 
 ### レイテンシーを分解して図を生成する
 
@@ -304,7 +275,7 @@ python benchmark/build_breakdown.py open
 python benchmark/plot_preentry.py open
 ```
 
-`build_breakdown.py` はクライアントの記録と `[ENTRYPOINT_REACHED]` のタイムスタンプを `session_id` で突き合わせ、`results/breakdown_open.json` を書きます。照合できないリクエストが 1 件でもあれば、黙って捨てずにエラーで停止します。捨てると分布が歪むためです。`plot_preentry.py` は `benchmark/images/coldstart_distribution_preentry_open.png` を出力します。
+`build_breakdown.py` はクライアントの記録と `[ENTRYPOINT_REACHED]` のタイムスタンプを `session_id` で突き合わせ、`results/breakdown_open.json` を書きます。照合できないリクエストが 1 件でもあれば、捨てずにエラーで停止します。捨てると分布が歪むためです。`plot_preentry.py` は `benchmark/images/coldstart_distribution_preentry_open.png` を出力します。
 
 ### 任意: モジュールスコープの初期化を重くする
 
@@ -324,18 +295,17 @@ python scripts/cleanup_runtimes.py          # 対象を表示するだけ
 python scripts/cleanup_runtimes.py --yes    # 実際に削除する
 ```
 
-`AGENTCORE_NAME_PREFIX` (既定 `v2sample_`) で始まる名前のランタイムのみを削除します。`--yes` を付けない場合は一覧を表示して終了します。
-
-プレフィックスが 4 文字未満の場合、スクリプトは実行を拒否します。空のプレフィックスはアカウントとリージョン内のすべてのランタイムに一致するため、この検証は AWS を呼ぶ前に行います。
+`AGENTCORE_NAME_PREFIX` (既定 `v2sample_`) で始まる名前のランタイムのみを削除します。`--yes` を付けない場合は一覧を表示して終了します。プレフィックスが 4 文字未満の場合、スクリプトは AWS を呼ぶ前に実行を拒否します。空のプレフィックスはアカウントとリージョン内のすべてのランタイムに一致するためです。
 
 ランタイム自体の削除は V2 でも数秒で終わります。裏側のスナップショットの消失には最大 8 時間かかります。そのスナップショット上で既に動いているセッションが終了まで継続するためであり、8 時間はセッションの最大寿命です。
 
 ## 注意事項と現時点の制限
 
-- V2 はエージェントの環境変数の合計サイズを、直接コードデプロイで 1.5 KB、コンテナエージェントで 2.5 KB に制限しています。V1 は 4 KB です。超えると `ValidationException` で失敗します。ドキュメントにはこの上限を V1 と同じ値まで引き上げる予定と記載されています。
-- コンテナは起動から 120 秒以内に `/ping` で healthy を報告する必要があります。間に合わない場合、ヘルスチェックのエラーで作成が失敗します。AgentCore SDK を使う場合はこれが自動的に満たされます。`app.run()` までサーバが listen しないため、スナップショットは構造上、完全に初期化されたエージェントを捉えます。
+- スナップショットは 1 回だけ取得され、復元されたすべての microVM で共有されます。モジュールスコープで生成した値はスナップショット時点に固定されるため、タイムスタンプ・認証情報・乱数シード・確立済みの接続はハンドラ内で生成してください。詳細は [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html) をご覧ください。
+- V2 はエージェントの環境変数の合計サイズを、CodeZip で 1.5 KB、Container で 2.5 KB に制限しています (V1 は 4 KB)。超えると `ValidationException` で失敗します。ドキュメントにはこの上限を V1 と同じ値まで引き上げる予定と記載されています。
+- コンテナは起動から 120 秒以内に `/ping` で healthy を報告する必要があります。間に合わない場合、ヘルスチェックのエラーで作成が失敗します。AgentCore SDK を使う場合は `app.run()` までサーバが listen しないため、この条件は自動的に満たされ、スナップショットは完全に初期化されたエージェントを捉えます。
 - AgentCore SDK ではなく独自の HTTP サーバを動かす場合は、初期化が完了してから healthy を返してください。
-- コンテナで独自の暗号ライブラリを持ち込む場合は、復元後に再シードする snapshot-safe なビルドを使ってください。Amazon Linux 2023 では `openssl-snapsafe-libs` を使います。直接コードデプロイのサービス管理ベースイメージには snapshot-safe なビルドが既に含まれています。
+- Container で独自の暗号ライブラリを持ち込む場合は、復元後に再シードする snapshot-safe なビルドをご利用ください。Amazon Linux 2023 では `openssl-snapsafe-libs` を使います。CodeZip のサービス管理ベースイメージには snapshot-safe なビルドが既に含まれています。
 
 ## 参考
 
@@ -343,6 +313,6 @@ python scripts/cleanup_runtimes.py --yes    # 実際に削除する
 - [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html)
 - [Host agent or tools with Amazon Bedrock AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html)
 - [The new AgentCore runtime: Elastic, optimized, and consistently fast starts](https://aws.amazon.com/jp/blogs/machine-learning/the-new-agentcore-runtime-elastic-optimized-and-consistently-fast-starts/)
-- [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA) — V1 のコンテナデプロイがエンドポイント単位で保持する pre-warmed instance について
+- [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA) — V1 の Container デプロイがエンドポイント単位で保持する pre-warmed instance について
 - [Deploy an agent with direct code deployment (Python)](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-code-deploy-python.html) — ZIP アーティファクトのパッケージング規則
 - [create_agent_runtime](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-agentcore-control/client/create_agent_runtime.html) / [update_agent_runtime](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-agentcore-control/client/update_agent_runtime.html) / [get_agent_runtime](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-agentcore-control/client/get_agent_runtime.html)

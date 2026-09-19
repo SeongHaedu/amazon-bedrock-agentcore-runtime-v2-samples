@@ -3,8 +3,7 @@
 
 Pre-entrypoint is the interval from dispatched_at to agent-bench's [ENTRYPOINT_REACHED]. It is
 not microVM boot time: network, auth, routing, environment preparation and HTTP dispatch are
-all mixed into it. The floor measured on a reused session (the second invoke onwards) was
-156 - 159 ms in our own runs. V1 carries module-scope initialization here; V2 does not.
+all mixed into it. V1 carries module-scope initialization here; V2 does not.
 
 The interval is narrowed to this segment because most of the end-to-end variance comes from
 the LLM call, which drowns out the effect of platformVersion.
@@ -65,8 +64,8 @@ FILL_ALPHA = {"V1": 0.07, "V2": 0.13}
 PANEL_KEY = "startup_ms"
 PANEL_TITLE = "Pre-entrypoint — dispatch to agent entrypoint"
 PANEL_NOTE = (
-    "Network, auth, routing, environment preparation, dispatch. Not microVM boot alone;\n"
-    "floor 156-159 ms on a reused session. V1 also carries module-scope init here; V2 does not."
+    "Network, auth, routing, environment preparation, dispatch. Not microVM boot alone.\n"
+    "V1 also carries module-scope init here; V2 does not."
 )
 
 BANDWIDTH_S = 0.25  # One absolute kernel width for every series; varying it hides shape differences.
