@@ -77,43 +77,43 @@ pip install -r requirements.txt
 
 以下のコマンドはすべてリポジトリのルートから実行します。
 
-## 前提リソースの作成
+## 0. 前提リソースの作成
 
 ```bash
 python scripts/setup_prerequisites.py
 ```
 
-実行ロール、ECR リポジトリ、S3 バケットを作成し、設定すべき環境変数を出力します。既にあるリソースはそのまま使います。
+`AWS_REGION` (既定 `us-west-2`) に実行ロール、ECR リポジトリ、S3 バケットを作成し、以降の手順で必要な 4 つの export を出力します。出力をそのまま貼れば設定は完了です。
 
-作成したリソースには `ManagedBy=agentcore-runtime-v2-samples` タグが付き、`scripts/cleanup.py` の削除対象になります。このタグが無いリソースは削除されません。
+```bash
+export AWS_REGION=<region>
+export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/AgentCoreV2SamplesExecutionRole
+export AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.<region>.amazonaws.com/agentcore-v2-samples:v2sample
+export AGENTCORE_S3_BUCKET=agentcore-v2-samples-<account-id>-<region>
+```
+
+別のリージョンに作る場合は、実行前に `AWS_REGION` を設定してください。V2 が利用できるリージョンは [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions) をご確認ください。
+
+既にあるリソースはそのまま使います。作成したリソースには `ManagedBy=agentcore-runtime-v2-samples` タグが付き、`scripts/cleanup.py` の削除対象になります。このタグが無いリソースは削除されません。
 
 実行ロールの権限は [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html) に従います。ZIP を置く S3 バケットの読み取り権限は含めません。アーティファクトの取得はサービス側が行います。
 
-## 環境変数
+### Optional: 環境変数
 
-`setup_prerequisites.py` が出力した export をそのまま貼り、残りを埋めます。
-
-`AWS_REGION` は明示的に設定してください。設定しない場合は `us-west-2` が使われ、ランタイムの作成先と `cleanup.py` が見るリージョンの両方が変わります。
+以下はすべて既定値があります。変えたいときだけ設定してください。
 
 ```bash
-export AWS_REGION=ap-northeast-1
-export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/<execution-role>
-
-# Container で試す場合
-export AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:v2sample
-
-# CodeZip で試す場合
-export AGENTCORE_S3_BUCKET=<bucket-name>
-export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # 省略可。これが既定値です。
-
-# 任意
 export AWS_PROFILE=<profile>
+export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # ZIP を置く S3 キー
 export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup.py はこのプレフィックスのみを削除 (4 文字以上)
 export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # CodeZip のランタイム
 export AGENTCORE_ENTRY_POINT=main.py                     # 複数要素を渡す場合はカンマ区切り
 export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # 終端状態になるまでポーリングする上限
 export BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-6   # 同名でエージェントに渡す。agent-bench が読む。
 export AGENTCORE_ENV_EXTRA=KEY=VALUE,KEY2=VALUE2         # エージェントに渡すその他の環境変数
+export AGENTCORE_SETUP_ROLE_NAME=<name>                  # setup_prerequisites.py が作るロール名
+export AGENTCORE_SETUP_ECR_REPOSITORY=<name>             # 同スクリプトが作る ECR リポジトリ名
+export AGENTCORE_SETUP_S3_BUCKET=<name>                  # 同スクリプトが作る S3 バケット名
 ```
 
 `entryPoint` は配列です。複数の要素が必要な場合は `AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"` のようにカンマ区切りで渡します。

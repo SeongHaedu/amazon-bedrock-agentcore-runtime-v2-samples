@@ -77,43 +77,43 @@ pip install -r requirements.txt
 
 Run every command below from the repository root.
 
-## Create the prerequisite resources
+## 0. Create the prerequisite resources
 
 ```bash
 python scripts/setup_prerequisites.py
 ```
 
-Creates the execution role, the ECR repository and the S3 bucket, then prints the environment variables to export. A resource that already exists is left as it is.
+Creates the execution role, the ECR repository and the S3 bucket in `AWS_REGION` (default `us-west-2`), then prints the four exports the later steps need. Paste them and the configuration is done.
 
-Everything it creates carries the `ManagedBy=agentcore-runtime-v2-samples` tag, which makes it a target for `scripts/cleanup.py`. Resources without that tag are never deleted.
+```bash
+export AWS_REGION=<region>
+export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/AgentCoreV2SamplesExecutionRole
+export AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.<region>.amazonaws.com/agentcore-v2-samples:v2sample
+export AGENTCORE_S3_BUCKET=agentcore-v2-samples-<account-id>-<region>
+```
+
+Set `AWS_REGION` before running it to place the resources elsewhere. For the Regions where V2 is available, see [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions).
+
+A resource that already exists is left as it is. Everything the script creates carries the `ManagedBy=agentcore-runtime-v2-samples` tag, which makes it a target for `scripts/cleanup.py`. Resources without that tag are never deleted.
 
 The role follows [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html). Read access to the S3 bucket holding the ZIP is not included: the service fetches the artifact itself.
 
-## Environment variables
+### Optional: environment variables
 
-Export what `setup_prerequisites.py` printed, then fill in the rest.
-
-Set `AWS_REGION` explicitly. Without it the scripts fall back to `us-west-2`, which changes both where runtimes are created and which Region `cleanup.py` looks at.
+Everything below has a default. Set it only when you want to change it.
 
 ```bash
-export AWS_REGION=ap-northeast-1
-export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/<execution-role>
-
-# Container
-export AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:v2sample
-
-# CodeZip
-export AGENTCORE_S3_BUCKET=<bucket-name>
-export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # optional, this is the default
-
-# Optional
 export AWS_PROFILE=<profile>
+export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # S3 key for the ZIP
 export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup.py deletes only this prefix (4 chars minimum)
 export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # runtime for CodeZip
 export AGENTCORE_ENTRY_POINT=main.py                     # comma-separated for more than one element
 export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # how long to poll for a terminal status
 export BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-6   # passed to the agent under the same name; agent-bench reads it
 export AGENTCORE_ENV_EXTRA=KEY=VALUE,KEY2=VALUE2         # any other environment variable the agent should receive
+export AGENTCORE_SETUP_ROLE_NAME=<name>                  # role name setup_prerequisites.py creates
+export AGENTCORE_SETUP_ECR_REPOSITORY=<name>             # repository name it creates
+export AGENTCORE_SETUP_S3_BUCKET=<name>                  # bucket name it creates
 ```
 
 `entryPoint` is an array. Pass a comma-separated value when you need more than one element, for example `AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"`.
