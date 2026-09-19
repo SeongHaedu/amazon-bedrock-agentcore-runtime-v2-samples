@@ -31,12 +31,13 @@ You specify `platformVersion` the same way for both modes. Only the artifact dif
 ├── scripts/
 │   ├── common.py                Shared config and helpers. Reads all settings from env vars.
 │   ├── check_sdk_version.py     Verify the installed SDK supports platformVersion. No AWS calls.
+│   ├── setup_prerequisites.py   Create the execution role, ECR repository and S3 bucket.
 │   ├── setup_codezip_artifact.py Build an ARM64 ZIP and upload it to S3 (no Docker needed).
 │   ├── create_runtime.py        Create a runtime with V1 / V2 / omitted, timing READY.
 │   ├── switch_platform_version.py Move an existing runtime between V1 and V2.
 │   ├── get_runtime.py           Read platformVersion via get_agent_runtime.
 │   ├── invoke_runtime.py        Invoke with fresh sessions and compare against session reuse.
-│   └── cleanup_runtimes.py      Delete only runtimes matching the name prefix.
+│   └── cleanup.py               Delete matching runtimes and the prerequisite resources.
 ├── benchmark/
 │   ├── apply_config.py          Apply artifact / env / platformVersion in one update, timing READY.
 │   ├── tps_bench_open.py        Open-loop load generator. Reports the TPS it actually achieved.
@@ -56,58 +57,24 @@ You specify `platformVersion` the same way for both modes. Only the artifact dif
 
 - Python 3.10 or later.
 - `boto3>=1.43.95`. This is the first public release that carries the `platformVersion` field. Earlier versions reject the request with `ParamValidationError` before it is sent.
-- An AgentCore Runtime execution role.
+- An AgentCore Runtime execution role, an ECR repository (for Container) and an S3 bucket (for CodeZip). `scripts/setup_prerequisites.py` creates all three.
 - A Region where V2 is available. For the current list, see [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions).
-- For Container: Docker with `docker buildx`, and an ECR repository. AgentCore Runtime microVMs run ARM64 Linux.
-- For CodeZip: an existing S3 bucket.
+- For Container: Docker with `docker buildx`. AgentCore Runtime microVMs run ARM64 Linux.
 
 > [!NOTE]
 > AWS CloudFormation and the AWS CDK do not currently support setting `platformVersion`. Use the AWS SDK, the AWS CLI, or the console.
 
 ## Create the prerequisite resources
 
-You provide the execution role, the ECR repository and the S3 bucket yourself. The scripts in this repository do not create them.
-
-ECR repository (for Container):
-
 ```bash
-aws ecr create-repository --repository-name agentcore-runtime-v2-samples --region $AWS_REGION
+python scripts/setup_prerequisites.py
 ```
 
-S3 bucket (for CodeZip):
+Creates the execution role, the ECR repository and the S3 bucket, then prints the environment variables to export. A resource that already exists is left as it is.
 
-```bash
-aws s3 mb s3://<bucket-name> --region $AWS_REGION
-```
+Everything it creates carries the `ManagedBy=agentcore-runtime-v2-samples` tag, which makes it a target for `scripts/cleanup.py`. Resources without that tag are never deleted.
 
-The execution role is the role AgentCore Runtime assumes to run your agent. Its trust policy is the following.
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "AssumeRolePolicy",
-      "Effect": "Allow",
-      "Principal": { "Service": "bedrock-agentcore.amazonaws.com" },
-      "Action": "sts:AssumeRole",
-      "Condition": {
-        "StringEquals": { "aws:SourceAccount": "<account-id>" },
-        "ArnLike": { "aws:SourceArn": "arn:aws:bedrock-agentcore:<region>:<account-id>:*" }
-      }
-    }
-  ]
-}
-```
-
-For the full permissions policy and the current requirements, see [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html). Container and CodeZip need different sets. These four are what the steps in this repository exercise:
-
-- Writing to CloudWatch Logs. The breakdown in Step 7 reads those logs.
-- Invoking Bedrock models (`bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`). `agent-bench` calls a model.
-- Pulling the image from ECR (`ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, `ecr:GetAuthorizationToken`). Needed for Container.
-- Sending X-Ray traces and CloudWatch metrics. Both are part of the policy in the documentation.
-
-Read access to the S3 bucket holding the ZIP is not part of the CodeZip policy in the documentation. The service fetches the artifact itself.
+The role follows [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html). Read access to the S3 bucket holding the ZIP is not included: the service fetches the artifact itself.
 
 ## Setup
 
@@ -124,7 +91,7 @@ Run every command below from the repository root.
 
 ## Environment variables
 
-Set `AWS_REGION` explicitly. Without it the scripts fall back to `us-west-2`, which changes both where runtimes are created and which Region `cleanup_runtimes.py` looks at.
+Set `AWS_REGION` explicitly. Without it the scripts fall back to `us-west-2`, which changes both where runtimes are created and which Region `cleanup.py` looks at.
 
 ```bash
 export AWS_REGION=ap-northeast-1
@@ -139,7 +106,7 @@ export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # optional, this is the
 
 # Optional
 export AWS_PROFILE=<profile>
-export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py deletes only this prefix (4 chars minimum)
+export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup.py deletes only this prefix (4 chars minimum)
 export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # runtime for CodeZip
 export AGENTCORE_ENTRY_POINT=main.py                     # comma-separated for more than one element
 export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # how long to poll for a terminal status
@@ -340,11 +307,14 @@ Keep the value below 120. Your container must report healthy within 120 seconds 
 ## Cleanup
 
 ```bash
-python scripts/cleanup_runtimes.py          # list the targets only
-python scripts/cleanup_runtimes.py --yes    # actually delete
+python scripts/cleanup.py                        # list the targets only
+python scripts/cleanup.py --yes                  # delete runtimes and prerequisites
+python scripts/cleanup.py --yes --keep-resources # delete runtimes only
 ```
 
-Only runtimes whose name starts with `AGENTCORE_NAME_PREFIX` (default `v2sample_`) are deleted. Without `--yes` the script prints the list and exits. The script refuses to run if the prefix is shorter than 4 characters, before any AWS call, because an empty prefix matches every runtime in the account and Region.
+Deletes the runtimes whose name starts with `AGENTCORE_NAME_PREFIX` (default `v2sample_`) and the prerequisite resources that `setup_prerequisites.py` created. Without `--yes` it prints the list and exits.
+
+Two mechanisms narrow what it touches. Runtimes are matched on the name prefix, and a prefix shorter than 4 characters aborts before any AWS call. Prerequisites are matched on the `ManagedBy` tag, so a role, repository or bucket that already existed in your account is skipped.
 
 Deletion of the runtime itself takes seconds even on V2. The underlying snapshot can take up to 8 hours to disappear, because sessions already running on it continue until they end. That is the maximum session lifetime.
 

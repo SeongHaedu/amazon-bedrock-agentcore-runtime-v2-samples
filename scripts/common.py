@@ -27,17 +27,38 @@ CODE_RUNTIME = os.environ.get("AGENTCORE_CODE_RUNTIME", "PYTHON_3_11")
 # for example AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py".
 ENTRY_POINT = [p.strip() for p in os.environ.get("AGENTCORE_ENTRY_POINT", "main.py").split(",") if p.strip()]
 
-# Prefix applied to every runtime name this repository creates. cleanup_runtimes.py deletes
+# Prefix applied to every runtime name this repository creates. cleanup.py deletes
 # only runtimes carrying this prefix, which keeps it from touching unrelated resources.
 #
 # The default is applied with `or` rather than os.environ.get's default argument: exporting
 # AGENTCORE_NAME_PREFIX="" puts the key in the environment, so the default would not apply.
 # An empty prefix makes "any name".startswith("") true and would match every runtime in the
-# account and Region. cleanup_runtimes.py also enforces a minimum length.
+# account and Region. cleanup.py also enforces a minimum length.
 NAME_PREFIX = os.environ.get("AGENTCORE_NAME_PREFIX") or "v2sample_"
 
 # Minimum prefix length required for cleanup. A short prefix deletes too much.
 MIN_NAME_PREFIX_LEN = 4
+
+# Tag applied to everything scripts/setup_prerequisites.py creates. scripts/cleanup.py reads
+# it back before deleting, so it can never remove a role, repository or bucket that already
+# existed in the account.
+MANAGED_TAG_KEY = "ManagedBy"
+MANAGED_TAG_VALUE = "agentcore-runtime-v2-samples"
+
+# Names of the prerequisite resources. Override them when the defaults collide with something
+# in your account.
+SETUP_ROLE_NAME = os.environ.get("AGENTCORE_SETUP_ROLE_NAME") or "AgentCoreV2SamplesExecutionRole"
+SETUP_ROLE_POLICY_NAME = "AgentCoreV2SamplesExecutionPolicy"
+SETUP_ECR_REPOSITORY = os.environ.get("AGENTCORE_SETUP_ECR_REPOSITORY") or "agentcore-v2-samples"
+
+
+def setup_bucket_name(account_id):
+    """Bucket names are globally unique, so the account id and Region are part of the default."""
+    return (
+        os.environ.get("AGENTCORE_SETUP_S3_BUCKET")
+        or f"agentcore-v2-samples-{account_id}-{REGION}"
+    )
+
 
 NETWORK = {"networkMode": "PUBLIC"}
 

@@ -31,12 +31,13 @@ Amazon Bedrock AgentCore Runtime (以下 AgentCore Runtime) のプラットフ�
 ├── scripts/
 │   ├── common.py                共通の設定とヘルパー。設定はすべて環境変数から読む
 │   ├── check_sdk_version.py     導入済み SDK の platformVersion 対応を確認 (AWS を呼ばない)
+│   ├── setup_prerequisites.py   実行ロール・ECR リポジトリ・S3 バケットを作成
 │   ├── setup_codezip_artifact.py ARM64 向けの ZIP を作り S3 にアップロード (Docker 不要)
 │   ├── create_runtime.py        V1 / V2 / 省略でランタイムを作成し READY までを計測
 │   ├── switch_platform_version.py 既存ランタイムを V1 と V2 の間で切り替え
 │   ├── get_runtime.py           get_agent_runtime で platformVersion を確認
 │   ├── invoke_runtime.py        新規セッションで呼び出し、セッション再利用と比較
-│   └── cleanup_runtimes.py      名前プレフィックスに一致するランタイムのみを削除
+│   └── cleanup.py               プレフィックスに一致するランタイムと前提リソースを削除
 ├── benchmark/
 │   ├── apply_config.py          artifact / 環境変数 / platformVersion を 1 回の update で適用し計時
 │   ├── tps_bench_open.py        開ループの負荷生成。実際に達成した TPS を出力
@@ -56,58 +57,24 @@ Amazon Bedrock AgentCore Runtime (以下 AgentCore Runtime) のプラットフ�
 
 - Python 3.10 以降が必要です。
 - `boto3>=1.43.95` が必要です。`platformVersion` フィールドを含む最初の公開版であり、これ未満のバージョンではリクエストが送信される前に `ParamValidationError` で拒否されます。
-- AgentCore Runtime の実行ロールが必要です。
+- AgentCore Runtime の実行ロール、ECR リポジトリ (Container で試す場合)、S3 バケット (CodeZip で試す場合) が必要です。いずれも `scripts/setup_prerequisites.py` で作成できます。
 - V2 が利用できるリージョンで実行します。対応リージョンの最新の一覧は [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions) をご確認ください。
-- Container で試す場合は、`docker buildx` が使える Docker と ECR リポジトリが必要です。AgentCore Runtime の microVM は ARM64 Linux です。
-- CodeZip で試す場合は、既存の S3 バケットが必要です。
+- Container で試す場合は `docker buildx` が使える Docker が必要です。AgentCore Runtime の microVM は ARM64 Linux です。
 
 > [!NOTE]
 > AWS CloudFormation と AWS CDK は現時点で `platformVersion` の設定に対応していません。AWS SDK、AWS CLI、またはマネジメントコンソールをご利用ください。
 
 ## 前提リソースの作成
 
-実行ロール、ECR リポジトリ、S3 バケットはご自身で用意します。本リポジトリのスクリプトはこれらを作成しません。
-
-ECR リポジトリ (Container で試す場合):
-
 ```bash
-aws ecr create-repository --repository-name agentcore-runtime-v2-samples --region $AWS_REGION
+python scripts/setup_prerequisites.py
 ```
 
-S3 バケット (CodeZip で試す場合):
+実行ロール、ECR リポジトリ、S3 バケットを作成し、設定すべき環境変数を出力します。既にあるリソースはそのまま使います。
 
-```bash
-aws s3 mb s3://<bucket-name> --region $AWS_REGION
-```
+作成したリソースには `ManagedBy=agentcore-runtime-v2-samples` タグが付き、`scripts/cleanup.py` の削除対象になります。このタグが無いリソースは削除されません。
 
-実行ロールは AgentCore Runtime がエージェントを動かすために引き受けるロールです。信頼ポリシーは次のとおりです。
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "AssumeRolePolicy",
-      "Effect": "Allow",
-      "Principal": { "Service": "bedrock-agentcore.amazonaws.com" },
-      "Action": "sts:AssumeRole",
-      "Condition": {
-        "StringEquals": { "aws:SourceAccount": "<account-id>" },
-        "ArnLike": { "aws:SourceArn": "arn:aws:bedrock-agentcore:<region>:<account-id>:*" }
-      }
-    }
-  ]
-}
-```
-
-権限ポリシーの全文と最新の要件は [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html) をご確認ください。Container と CodeZip で必要な内容が異なります。本リポジトリの手順で使うのは次の 4 つです。
-
-- CloudWatch Logs への書き込み。手順 7 の内訳分解はこのログを読みます。
-- Bedrock モデルの呼び出し (`bedrock:InvokeModel`、`bedrock:InvokeModelWithResponseStream`)。`agent-bench` がモデルを呼びます。
-- ECR からのイメージ取得 (`ecr:BatchGetImage`、`ecr:GetDownloadUrlForLayer`、`ecr:GetAuthorizationToken`)。Container で試す場合に必要です。
-- X-Ray と CloudWatch メトリクスへの送信。ドキュメントのポリシーに含まれています。
-
-ZIP を置いた S3 バケットの読み取り権限は、ドキュメントの CodeZip 用ポリシーには含まれていません。アーティファクトの取得はサービス側が行います。
+実行ロールの権限は [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html) に従います。ZIP を置く S3 バケットの読み取り権限は含めません。アーティファクトの取得はサービス側が行います。
 
 ## セットアップ
 
@@ -124,7 +91,7 @@ pip install -r requirements.txt
 
 ## 環境変数
 
-`AWS_REGION` は明示的に設定してください。設定しない場合は `us-west-2` が使われ、ランタイムの作成先と `cleanup_runtimes.py` が見るリージョンの両方が変わります。
+`AWS_REGION` は明示的に設定してください。設定しない場合は `us-west-2` が使われ、ランタイムの作成先と `cleanup.py` が見るリージョンの両方が変わります。
 
 ```bash
 export AWS_REGION=ap-northeast-1
@@ -139,7 +106,7 @@ export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # 省略可。これが
 
 # 任意
 export AWS_PROFILE=<profile>
-export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py はこのプレフィックスのみを削除 (4 文字以上)
+export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup.py はこのプレフィックスのみを削除 (4 文字以上)
 export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # CodeZip のランタイム
 export AGENTCORE_ENTRY_POINT=main.py                     # 複数要素を渡す場合はカンマ区切り
 export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # 終端状態になるまでポーリングする上限
@@ -340,11 +307,14 @@ python benchmark/tps_bench_open.py $ARN_CT container_v2_gs25 5 20
 ## クリーンアップ
 
 ```bash
-python scripts/cleanup_runtimes.py          # 対象を表示するだけ
-python scripts/cleanup_runtimes.py --yes    # 実際に削除する
+python scripts/cleanup.py                        # 対象を表示するだけ
+python scripts/cleanup.py --yes                  # ランタイムと前提リソースを削除する
+python scripts/cleanup.py --yes --keep-resources # ランタイムのみ削除する
 ```
 
-`AGENTCORE_NAME_PREFIX` (既定 `v2sample_`) で始まる名前のランタイムのみを削除します。`--yes` を付けない場合は一覧を表示して終了します。プレフィックスが 4 文字未満の場合、スクリプトは AWS を呼ぶ前に実行を拒否します。空のプレフィックスはアカウントとリージョン内のすべてのランタイムに一致するためです。
+`AGENTCORE_NAME_PREFIX` (既定 `v2sample_`) で始まる名前のランタイムと、`setup_prerequisites.py` が作成した前提リソースを削除します。`--yes` を付けない場合は一覧を表示して終了します。
+
+削除を絞る仕組みが 2 つあります。ランタイムは名前のプレフィックスで絞り、プレフィックスが 4 文字未満の場合は AWS を呼ぶ前に実行を拒否します。前提リソースは `ManagedBy` タグを確認し、タグが無いものはスキップします。元々アカウントにあったロール・リポジトリ・バケットは削除されません。
 
 ランタイム自体の削除は V2 でも数秒で終わります。裏側のスナップショットの消失には最大 8 時間かかります。そのスナップショット上で既に動いているセッションが終了まで継続するためであり、8 時間はセッションの最大寿命です。
 
