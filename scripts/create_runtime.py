@@ -118,7 +118,16 @@ def main():
             flush=True,
         )
     else:
-        print(f"[{name}] 失敗: {record.get('error_type')} {record.get('message', '')}", flush=True)
+        # タイムアウト経路では error_type が無く、final_status に TIMEOUT(last=...) が入る。
+        # どちらの経路でも原因が画面に出るようにする。
+        reason = record.get("error_type") or record.get("final_status")
+        print(f"[{name}] 失敗: {reason} {record.get('message', '')}", flush=True)
+        if str(reason).startswith("TIMEOUT"):
+            print(
+                "    AGENTCORE_WAIT_TIMEOUT_SEC を延ばして再確認する。"
+                " V2 の作成はスナップショット準備のため数分かかる。",
+                flush=True,
+            )
 
     save_result(f"create_{suffix}.json", record)
     if not record.get("ok"):

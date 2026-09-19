@@ -28,7 +28,8 @@ Blog post (Japanese): TBD
 │   ├── invoke_runtime.py        Invoke with fresh sessions and compare against session reuse.
 │   ├── probe_globalinit.py      Burst-invoke the probe agent to see where startup work lands.
 │   └── cleanup_runtimes.py      Delete only runtimes matching the name prefix.
-└── requirements.txt             boto3>=1.43.95
+├── requirements.txt             boto3>=1.43.95
+└── results/                     JSON output from every script (gitignored)
 ```
 
 ## Prerequisites
@@ -57,6 +58,8 @@ All commands below are run from the repository root.
 
 ## Environment variables
 
+Set `AWS_REGION` explicitly. Without it the scripts fall back to `us-west-2`, which changes both where runtimes are created and which Region `cleanup_runtimes.py` looks at.
+
 ```bash
 export AWS_REGION=ap-northeast-1
 export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/<execution-role>
@@ -70,8 +73,22 @@ export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # optional, this is the
 
 # Optional
 export AWS_PROFILE=<profile>
-export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py deletes only this prefix
+export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py deletes only this prefix (4 chars minimum)
+export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # runtime for direct code deployment
+export AGENTCORE_ENTRY_POINT=main.py                     # comma-separated for more than one element
+export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # how long to poll for a terminal status
 ```
+
+`entryPoint` is an array. Pass a comma-separated value when you need more than one element, for example `AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"`.
+
+`agent-globalinit-probe` reads two more variables. Its Dockerfile sets both to 10 seconds.
+
+```bash
+export GLOBAL_INIT_SECS=10   # sleep at module scope, captured in the snapshot on V2
+export LAZY_INIT_SECS=10     # sleep on the first request of each session
+```
+
+Keep `GLOBAL_INIT_SECS` well below 120. Your container must report healthy within 120 seconds of startup, and this sleep runs before the server starts listening, so a large value makes create or update fail with a health check error.
 
 ## Step 1: Check your SDK
 
@@ -152,7 +169,7 @@ The runtime must be in a terminal state (`READY` or `*_FAILED`) before you call 
 ## Step 6: Invoke
 
 ```bash
-python scripts/invoke_runtime.py <agentRuntimeId> 3 2
+python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 3 2
 ```
 
 The arguments are the number of sessions and the number of invokes per session. Each session uses a fresh `runtimeSessionId`, so every first invoke goes through the startup path. The second invoke in the same session lands on the existing environment, which gives you the floor for a request that includes no startup work.
@@ -174,12 +191,14 @@ docker buildx build --platform linux/arm64 \
 AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:probe \
   python scripts/create_runtime.py probe_v2 container V2
 
-python scripts/probe_globalinit.py <agentRuntimeId> 20
+python scripts/probe_globalinit.py <agentRuntimeId|agentRuntimeArn> 20
 ```
+
+The trailing `20` is the number of sessions to fire concurrently. That is also the default. Send enough of them at once that V1 runs out of pre-warmed instances; otherwise the V1 side hides its global initialization in the pool.
 
 On V2, the 10 seconds of global initialization does not appear in any invoke. It was spent once while the snapshot was prepared. The 10 seconds of lazy initialization appears on the first invoke of every session, because the snapshot cannot carry it.
 
-Do the same against a V1 runtime built from the same image and send enough concurrent sessions to exhaust the pre-warmed instances. There the global initialization does show up on the request path.
+Do the same against a V1 runtime built from the same image and send enough concurrent sessions to exhaust the pre-warmed instances that V1 container deployments keep per endpoint (see [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA)). There the global initialization does show up on the request path.
 
 Note what else the probe reports. `baked.wall_clock` is the time at which module scope ran, so on V2 the gap between it and `now` grows as the snapshot ages. That is the concrete reason not to hold timestamps, credentials, random seeds, or established connections at module scope on V2. See [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html).
 
@@ -191,6 +210,8 @@ python scripts/cleanup_runtimes.py --yes    # actually delete
 ```
 
 Only runtimes whose name starts with `AGENTCORE_NAME_PREFIX` (default `v2sample_`) are deleted. Without `--yes` the script prints the list and exits.
+
+The script refuses to run if the prefix is shorter than 4 characters. An empty prefix matches every runtime in the account and Region, so this check runs before any AWS call.
 
 Deletion of the runtime itself takes seconds even on V2. The underlying snapshot can take up to 8 hours to disappear, because sessions already running on it continue until they end. That is the maximum session lifetime.
 
@@ -207,4 +228,6 @@ Deletion of the runtime itself takes seconds even on V2. The underlying snapshot
 - [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html)
 - [Host agent or tools with Amazon Bedrock AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html)
 - [The new AgentCore runtime: Elastic, optimized, and consistently fast starts](https://aws.amazon.com/blogs/machine-learning/the-new-agentcore-runtime-elastic-optimized-and-consistently-fast-starts/)
+- [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA) — the pre-warmed instances that V1 container deployments keep per endpoint
+- [Deploy an agent with direct code deployment (Python)](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-code-deploy-python.html) — packaging rules for the ZIP artifact
 - [create_agent_runtime](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-agentcore-control/client/create_agent_runtime.html) / [update_agent_runtime](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-agentcore-control/client/update_agent_runtime.html) / [get_agent_runtime](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-agentcore-control/client/get_agent_runtime.html)

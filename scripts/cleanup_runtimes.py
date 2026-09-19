@@ -1,10 +1,12 @@
 # cleanup_runtimes.py
 # AGENTCORE_NAME_PREFIX (既定 "v2sample_") で始まるランタイムのみを削除する。
 #
-# 安全策は 3 点である。
-#   1. プレフィックスの一致を列挙時とループ内の両方で検証する。
-#   2. --yes を付けない場合は対象一覧の表示だけで終了し、削除しない。
-#   3. 削除の完了判定は ResourceNotFoundException と DELETE_FAILED の両方を見る。
+# 安全策は 4 点である。
+#   1. プレフィックスの長さの下限を実行時に検証する。空文字列は全ランタイムに一致するため、
+#      これが無いと以降の 2 つの安全策が意味を持たなくなる。
+#   2. プレフィックスの一致を列挙時とループ内の両方で検証する。
+#   3. --yes を付けない場合は対象一覧の表示だけで終了し、削除しない。
+#   4. 削除の完了判定は ResourceNotFoundException と DELETE_FAILED の両方を見る。
 #
 # usage:
 #   python scripts/cleanup_runtimes.py          # 対象を表示するだけ
@@ -16,10 +18,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from botocore.exceptions import ClientError
 
-from common import NAME_PREFIX, list_sample_runtimes, make_client, save_result, wait_until_deleted
+from common import (
+    MIN_NAME_PREFIX_LEN,
+    NAME_PREFIX,
+    list_sample_runtimes,
+    make_client,
+    save_result,
+    wait_until_deleted,
+)
 
 
 def main():
+    # 空文字列や極端に短いプレフィックスでは、意図しないランタイムまで一致してしまう。
+    # AWS を呼ぶ前に落とす。
+    if len(NAME_PREFIX) < MIN_NAME_PREFIX_LEN:
+        raise SystemExit(
+            f"AGENTCORE_NAME_PREFIX が短すぎる ({NAME_PREFIX!r})。"
+            f" 誤削除を防ぐため {MIN_NAME_PREFIX_LEN} 文字以上を要求する。"
+        )
+
     apply_delete = "--yes" in sys.argv[1:]
     client = make_client("bedrock-agentcore-control")
     candidates = list_sample_runtimes(client)

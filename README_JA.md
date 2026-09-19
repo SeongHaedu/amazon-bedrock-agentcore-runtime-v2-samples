@@ -28,17 +28,18 @@ Amazon Bedrock AgentCore Runtime のプラットフォームバージョン V2 �
 │   ├── invoke_runtime.py        新規セッションで呼び出し、セッション再利用と比較する。
 │   ├── probe_globalinit.py      プローブを同時呼び出しし、起動時の処理の所在を観測する。
 │   └── cleanup_runtimes.py      名前プレフィックスに一致するランタイムのみを削除する。
-└── requirements.txt             boto3>=1.43.95
+├── requirements.txt             boto3>=1.43.95
+└── results/                     各スクリプトの実行結果 JSON の出力先 (.gitignore 対象)
 ```
 
 ## 前提条件
 
-- Python 3.10 以降
-- `boto3>=1.43.95`。`platformVersion` フィールドを含む最初の公開版です。これ未満のバージョンでは、リクエストが送信される前に `ParamValidationError` で拒否されます。
-- AgentCore Runtime の実行ロール
-- V2 が利用できるリージョン: `us-east-1`、`us-east-2`、`us-west-2`、`eu-west-1`、`ap-northeast-1`
-- コンテナで試す場合: `docker buildx` が使える Docker (AgentCore Runtime の microVM は ARM64 Linux です) と ECR リポジトリ
-- 直接コードデプロイで試す場合: 既存の S3 バケット
+- Python 3.10 以降が必要です。
+- `boto3>=1.43.95` が必要です。`platformVersion` フィールドを含む最初の公開版です。これ未満のバージョンでは、リクエストが送信される前に `ParamValidationError` で拒否されます。
+- AgentCore Runtime の実行ロールが必要です。
+- V2 が利用できるリージョンで実行します。`us-east-1`、`us-east-2`、`us-west-2`、`eu-west-1`、`ap-northeast-1` の 5 つです。
+- コンテナで試す場合は、`docker buildx` が使える Docker と ECR リポジトリが必要です。AgentCore Runtime の microVM は ARM64 Linux です。
+- 直接コードデプロイで試す場合は、既存の S3 バケットが必要です。
 
 > 注意: AWS CloudFormation と AWS CDK は現時点で `platformVersion` の設定に対応していません。AWS SDK、CLI、またはコンソールを使用してください。
 
@@ -57,6 +58,8 @@ pip install -r requirements.txt
 
 ## 環境変数
 
+`AWS_REGION` は明示的に設定してください。設定しない場合は `us-west-2` が使われます。ランタイムの作成先と `cleanup_runtimes.py` が見るリージョンの両方が変わるためです。
+
 ```bash
 export AWS_REGION=ap-northeast-1
 export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/<execution-role>
@@ -70,8 +73,22 @@ export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # 省略可。これが
 
 # 任意
 export AWS_PROFILE=<profile>
-export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py はこのプレフィックスのみを削除する
+export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py はこのプレフィックスのみを削除する (4 文字以上)
+export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # 直接コードデプロイのランタイム
+export AGENTCORE_ENTRY_POINT=main.py                     # 複数要素を渡す場合はカンマ区切り
+export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # 終端状態になるまでポーリングする上限
 ```
+
+`entryPoint` は配列です。複数の要素が必要な場合はカンマ区切りで渡します。例えば `AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"` のように指定します。
+
+`agent-globalinit-probe` はさらに 2 つの環境変数を読みます。Dockerfile で両方を 10 秒に設定しています。
+
+```bash
+export GLOBAL_INIT_SECS=10   # モジュールスコープでのスリープ。V2 ではスナップショットに取り込まれる。
+export LAZY_INIT_SECS=10     # 各セッションの初回リクエストでのスリープ
+```
+
+`GLOBAL_INIT_SECS` は 120 より十分に小さい値に保ってください。コンテナは起動から 120 秒以内に healthy を報告する必要があり、このスリープはサーバが listen を開始する前に走ります。大きな値を設定すると、作成または更新がヘルスチェックのエラーで失敗します。
 
 ## 手順 1: SDK を確認する
 
@@ -152,7 +169,7 @@ update を呼ぶ前に、ランタイムが終端状態 (`READY` または `*_FA
 ## 手順 6: 呼び出す
 
 ```bash
-python scripts/invoke_runtime.py <agentRuntimeId> 3 2
+python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 3 2
 ```
 
 引数はセッション数とセッションあたりの呼び出し回数です。各セッションは新しい `runtimeSessionId` を使うため、初回の呼び出しは必ず起動の経路を通ります。同一セッションの 2 回目は既存の実行環境に着地するため、起動を含まないリクエストの下限が得られます。
@@ -174,12 +191,14 @@ docker buildx build --platform linux/arm64 \
 AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:probe \
   python scripts/create_runtime.py probe_v2 container V2
 
-python scripts/probe_globalinit.py <agentRuntimeId> 20
+python scripts/probe_globalinit.py <agentRuntimeId|agentRuntimeArn> 20
 ```
+
+末尾の `20` は同時に発行するセッション数です。既定値も 20 です。V1 の pre-warmed instance が枯渇する数を一度に投げてください。数が足りないと、V1 側もグローバル初期化をプールの中で済ませてしまい差が見えません。
 
 V2 では、グローバル初期化の 10 秒はどの呼び出しにも現れません。スナップショットの準備時に 1 回だけ消費されています。遅延初期化の 10 秒は、すべてのセッションの初回呼び出しに現れます。スナップショットがこれを運べないためです。
 
-同じイメージから作成した V1 のランタイムに対して同じことを行い、pre-warmed instance を枯渇させるだけの同時セッションを投げてください。その場合はグローバル初期化がリクエストの経路に現れます。
+同じイメージから作成した V1 のランタイムに対して同じことを行い、pre-warmed instance を枯渇させるだけの同時セッションを投げてください。その場合はグローバル初期化がリクエストの経路に現れます。V1 のコンテナデプロイがエンドポイント単位で pre-warmed instance を保持することは [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA) に記載があります。
 
 プローブが返す他の値にも注目してください。`baked.wall_clock` はモジュールスコープが実行された時刻であるため、V2 ではスナップショットが古くなるにつれて `now` との差が広がります。これが、V2 ではタイムスタンプ・認証情報・乱数シード・確立済みの接続をモジュールスコープで保持してはならない具体的な理由です。詳細は [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html) を参照してください。
 
@@ -191,6 +210,8 @@ python scripts/cleanup_runtimes.py --yes    # 実際に削除する
 ```
 
 `AGENTCORE_NAME_PREFIX` (既定 `v2sample_`) で始まる名前のランタイムのみを削除します。`--yes` を付けない場合は一覧を表示して終了します。
+
+プレフィックスが 4 文字未満の場合、スクリプトは実行を拒否します。空のプレフィックスはアカウントとリージョン内のすべてのランタイムに一致するため、この検証は AWS を呼ぶ前に行います。
 
 ランタイム自体の削除は V2 でも数秒で終わります。裏側のスナップショットの消失には最大 8 時間かかります。そのスナップショット上で既に動いているセッションが終了まで継続するためであり、8 時間はセッションの最大寿命です。
 
@@ -207,4 +228,6 @@ python scripts/cleanup_runtimes.py --yes    # 実際に削除する
 - [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html)
 - [Host agent or tools with Amazon Bedrock AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agents-tools-runtime.html)
 - [The new AgentCore runtime: Elastic, optimized, and consistently fast starts](https://aws.amazon.com/jp/blogs/machine-learning/the-new-agentcore-runtime-elastic-optimized-and-consistently-fast-starts/)
+- [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA) — V1 のコンテナデプロイがエンドポイント単位で保持する pre-warmed instance について
+- [Deploy an agent with direct code deployment (Python)](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-code-deploy-python.html) — ZIP アーティファクトのパッケージング規則
 - [create_agent_runtime](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-agentcore-control/client/create_agent_runtime.html) / [update_agent_runtime](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-agentcore-control/client/update_agent_runtime.html) / [get_agent_runtime](https://docs.aws.amazon.com/boto3/latest/reference/services/bedrock-agentcore-control/client/get_agent_runtime.html)

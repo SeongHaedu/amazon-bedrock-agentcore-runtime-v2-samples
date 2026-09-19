@@ -39,6 +39,11 @@ def vendor_dependencies():
 
     # --only-binary=:all: を付けるのは、ソース配布からのビルドがローカルのアーキテクチャ向けに
     # なってしまうのを防ぐためである。wheel が無い依存があればここで失敗し、気付ける。
+    #
+    # --no-compile を付けるのは、ローカルでコンパイルしたバイトコードを作らせないためである。
+    # 開発機と実行環境でアーキテクチャや OS が異なると互換性が無い。公開ドキュメントも
+    # __pycache__ をデプロイパッケージに含めないことを推奨している。
+    # 念のため build_zip() 側でも除外する。
     command = [
         sys.executable,
         "-m",
@@ -49,6 +54,7 @@ def vendor_dependencies():
         "--python-version",
         PYTHON_VERSION,
         "--only-binary=:all:",
+        "--no-compile",
         "--target",
         str(BUILD_DIR),
         *DEPENDENCIES,
@@ -67,10 +73,16 @@ def build_zip(agent_dir):
         ZIP_PATH.unlink()
     with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(BUILD_DIR.rglob("*")):
-            if path.is_file():
-                # zip のルート直下に main.py と依存が並ぶ形にする。entryPoint は
-                # ["main.py"] であり、zip 内のパスと一致していなければ起動に失敗する。
-                zf.write(path, path.relative_to(BUILD_DIR))
+            if not path.is_file():
+                continue
+            # __pycache__ と .pyc は除外する。pip install --target がローカルの
+            # Python でコンパイルしたバイトコードであり、実行環境と Python の
+            # バージョンやアーキテクチャが異なると使えない。zip も無駄に膨らむ。
+            if "__pycache__" in path.parts or path.suffix == ".pyc":
+                continue
+            # zip のルート直下に main.py と依存が並ぶ形にする。entryPoint は
+            # ["main.py"] であり、zip 内のパスと一致していなければ起動に失敗する。
+            zf.write(path, path.relative_to(BUILD_DIR))
     return ZIP_PATH.stat().st_size
 
 

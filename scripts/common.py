@@ -22,11 +22,21 @@ CONTAINER_URI = os.environ.get("AGENTCORE_CONTAINER_URI")
 S3_BUCKET = os.environ.get("AGENTCORE_S3_BUCKET")
 S3_PREFIX = os.environ.get("AGENTCORE_S3_PREFIX", "agentcore/codezip/agent.zip")
 CODE_RUNTIME = os.environ.get("AGENTCORE_CODE_RUNTIME", "PYTHON_3_11")
-ENTRY_POINT = [os.environ.get("AGENTCORE_ENTRY_POINT", "main.py")]
+# entryPoint は配列である。OpenTelemetry の計装を挟む場合など複数要素を渡せるよう、
+# カンマ区切りで分割する。例: AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"
+ENTRY_POINT = [p.strip() for p in os.environ.get("AGENTCORE_ENTRY_POINT", "main.py").split(",") if p.strip()]
 
 # 作成するランタイム名に付けるプレフィックス。cleanup_runtimes.py はこのプレフィックスを
 # 持つランタイムのみを削除対象にする。既存リソースを誤って削除しないための安全策である。
-NAME_PREFIX = os.environ.get("AGENTCORE_NAME_PREFIX", "v2sample_")
+#
+# os.environ.get の既定値ではなく or で落とすのは、AGENTCORE_NAME_PREFIX="" のように
+# 空文字列で export された場合にキーが存在してしまい、既定値が適用されないためである。
+# 空文字列だと "任意の名前".startswith("") が常に True になり、アカウント・リージョン内の
+# 全ランタイムが削除対象になる。cleanup_runtimes.py 側でも長さの下限を検証する。
+NAME_PREFIX = os.environ.get("AGENTCORE_NAME_PREFIX") or "v2sample_"
+
+# クリーンアップで要求するプレフィックスの最小長。短いプレフィックスは削除範囲が広がりすぎる。
+MIN_NAME_PREFIX_LEN = 4
 
 NETWORK = {"networkMode": "PUBLIC"}
 ENV_VARS = {"PYTHONUNBUFFERED": "1"}
