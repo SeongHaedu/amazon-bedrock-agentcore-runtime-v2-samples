@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
-"""V1 / V2 の pre-entrypoint レイテンシー分布を 1 面で比較する図を生成する。
+"""Render a single-panel chart comparing the V1 / V2 pre-entrypoint latency distributions.
 
-pre-entrypoint は dispatched_at から agent-bench の [ENTRYPOINT_REACHED] までの区間です。
-microVM の起動時間そのものではありません。ネットワーク・認証・ルーティング・実行環境の準備・
-HTTP ディスパッチが混在します。同一セッションを再利用した 2 回目以降で測った下限は 156 〜 159 ms
-でした (手元の検証)。V1 にはここにモジュールスコープの初期化が含まれ、V2 には含まれません。
+Pre-entrypoint is the interval from dispatched_at to agent-bench's [ENTRYPOINT_REACHED]. It is
+not microVM boot time: network, auth, routing, environment preparation and HTTP dispatch are
+all mixed into it. The floor measured on a reused session (the second invoke onwards) was
+156 - 159 ms in our own runs. V1 carries module-scope initialization here; V2 does not.
 
-この区間に絞る理由は、end-to-end のばらつきの大半が LLM 呼び出し側に由来し、platformVersion の
-効果が読めなくなるためです。
+The interval is narrowed to this segment because most of the end-to-end variance comes from
+the LLM call, which drowns out the effect of platformVersion.
 
-符号化: 色の系統がデプロイ方式 (CodeZip = 暖色 / Container = 寒色)、系統内の明るい方が V2 です。
-線種は全系列で実線です。明るい 2 色は明るい背景に対するコントラストが 3:1 未満のため、各曲線に
-直接ラベルを置き、塗りの濃さにも差をつけています。
+Encoding: the color family is the deployment mode (CodeZip = warm, Container = cool) and the
+brighter member of each family is V2. Every series is drawn as a solid line. The two bright
+colors have less than 3:1 contrast against a light background, so each curve is labeled
+directly and the fills differ in strength as well.
 
 usage:
   python benchmark/plot_preentry.py [suffix] [subtitle-note]
 
-  suffix          build_breakdown.py が書いた results/breakdown_{suffix}.json を読む。既定は open。
-  subtitle-note   図の副題に入れる計測条件の説明。省略時は既定の文言を使う。
+  suffix          Reads results/breakdown_{suffix}.json written by build_breakdown.py.
+                  Defaults to open.
+  subtitle-note   Description of the measurement conditions for the subtitle. A default is
+                  used when omitted.
 
-出力: benchmark/images/coldstart_distribution_preentry_{suffix}.png
+output: benchmark/images/coldstart_distribution_preentry_{suffix}.png
 """
 import json
 import sys
@@ -50,8 +53,8 @@ INK = "#0b0b0b"
 INK_2 = "#52514e"
 GRID = "#dcdbd5"
 
-# 同系統で明度だけを変えると normal vision での色差が足りず判別できないため、色相もずらして
-# 色差を広げている。CodeZip = 暖色、Container = 寒色、明るい方が V2 である。
+# Varying only lightness within one family does not separate the series for normal vision, so
+# the hues are shifted apart as well. CodeZip = warm, Container = cool, brighter = V2.
 STYLE = {
     "CodeZip V1": "#eb6834",
     "CodeZip V2": "#d9a600",
@@ -66,18 +69,18 @@ PANEL_NOTE = (
     "floor 156-159 ms on a reused session. V1 also carries module-scope init here; V2 does not."
 )
 
-BANDWIDTH_S = 0.25  # 全系列で同一の絶対カーネル幅にする。系列ごとに変えると形を比較できない。
-BIN_S = 0.5  # 高さを「BIN_S あたりの件数」に換算する
+BANDWIDTH_S = 0.25  # One absolute kernel width for every series; varying it hides shape differences.
+BIN_S = 0.5  # Converts height into "requests per BIN_S"
 X_MIN, X_MAX = 0.0, 10.5
 
 if not DATA.exists():
-    raise SystemExit(f"{DATA} が無い。先に build_breakdown.py を実行する。")
+    raise SystemExit(f"{DATA} does not exist. Run build_breakdown.py first.")
 
 data = json.loads(DATA.read_text())
-# 系列の並びを色定義の順に固定する。dict の挿入順に依存させない。
+# Fix the series order to the order of the color definitions rather than dict insertion order.
 data = {k: data[k] for k in STYLE if k in data}
 if not data:
-    raise SystemExit(f"{DATA} に既知の系列が無い。系列名は {list(STYLE)} のいずれかである必要がある。")
+    raise SystemExit(f"{DATA} holds no known series. Series names must be one of {list(STYLE)}.")
 
 grid = np.linspace(X_MIN, X_MAX, 1500)
 
@@ -94,14 +97,14 @@ top = max(c.max() for _, c in curves.values()) * 1.46
 rug_step = top * 0.027
 
 LABEL_LANES = (top * 0.895, top * 0.805)
-LABEL_MIN_GAP = 2.6  # 同一レーン内で確保する x 方向の最小間隔 (秒)
+LABEL_MIN_GAP = 2.6  # Minimum x distance (seconds) kept between labels in one lane
 
 
 def place_labels(ax, peaks):
-    """曲線の上のレーンにラベルを置き、各ピークへ引き出し線を引く。
+    """Place the labels in lanes above the curves and draw a leader line to each peak.
 
-    x 昇順に 2 レーンを交互に使い、レーン内では最小間隔を確保して右へ押し出す。
-    ピークが近接している系列でもラベルが衝突しない。
+    Two lanes are used alternately in ascending x order, and within a lane each label is
+    pushed right to keep the minimum gap. Series with nearby peaks do not collide.
     """
     lane_last_x = {0: -1e9, 1: -1e9}
     for i, (label, color, x, y) in enumerate(sorted(peaks, key=lambda p: p[2])):
@@ -117,7 +120,8 @@ def place_labels(ax, peaks):
 
 
 ax.set_facecolor(SURFACE)
-# 塗りを先にまとめて描く。線より下のレイヤに置くことで、重なった領域でも各系列の線が隠れない。
+# Draw all the fills first. Keeping them in a layer below the lines means no series line is
+# hidden where the regions overlap.
 for label in data:
     _, curve = curves[label]
     alpha = FILL_ALPHA["V2" if "V2" in label else "V1"]

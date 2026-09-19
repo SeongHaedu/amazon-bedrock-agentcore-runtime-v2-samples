@@ -1,14 +1,15 @@
 # agent-basic/main.py
 #
-# platformVersion V1 / V2 の差を最小構成で観測するためのエージェント。
-# LLM は呼び出さない。モデル側のばらつきを排除し、起動のセマンティクスだけを見るためである。
+# Smallest agent that shows the difference between platformVersion V1 and V2. It calls no
+# LLM, which removes model-side variance and leaves only the startup semantics.
 #
-# 3 種類のマーカーを stdout に出す。CloudWatch Logs で V1 / V2 の差がそのまま読める。
-#   [MODULE_START] / [MODULE_END] : モジュールスコープ (グローバルスコープ) の実行
-#   [ENTRYPOINT]                  : リクエストハンドラの実行
+# Three markers go to stdout, so the V1 / V2 difference reads directly in CloudWatch Logs:
+#   [MODULE_START] / [MODULE_END] : module scope (global scope) execution
+#   [ENTRYPOINT]                  : request handler execution
 #
-# V1 では新しい実行環境ごとに MODULE_START / MODULE_END が出る。
-# V2 では作成 / 更新時のスナップショット準備で 1 回だけ出て、invoke のログには出ない。
+# On V1, MODULE_START / MODULE_END appear once per new execution environment.
+# On V2 they appear once, while the snapshot is prepared on create or update, and not in the
+# logs of an invoke.
 import json
 import os
 import time
@@ -22,8 +23,8 @@ from bedrock_agentcore.runtime import BedrockAgentCoreApp  # noqa: E402
 
 app = BedrockAgentCoreApp()
 
-# スナップショットに焼き込まれる値。V2 では復元された全インスタンスがこの同じ値を共有する。
-# 復元ごとに再生成されないことを invoke のレスポンスで確認できる。
+# Captured in the snapshot. On V2 every restored instance shares this same value, and the
+# invoke response is where you can confirm it is not regenerated per restore.
 SNAPSHOT_IDENTITY = {
     "uuid": str(uuid.uuid4()),
     "pid": os.getpid(),
@@ -46,9 +47,9 @@ def invoke(payload, context):
         flush=True,
     )
     return {
-        # V2 では全セッションでこの値が一致する。V1 ではセッションごとに異なる。
+        # On V2 this value matches across sessions. On V1 it differs per session.
         "snapshot_identity": SNAPSHOT_IDENTITY,
-        # リクエストごとに変わるべき値はハンドラ側で生成する。
+        # Anything that has to change per request is generated in the handler.
         "request_uuid": str(uuid.uuid4()),
         "now": datetime.now(timezone.utc).isoformat(),
         "echo": payload,

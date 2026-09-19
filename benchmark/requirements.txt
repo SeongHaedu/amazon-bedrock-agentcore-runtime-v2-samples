@@ -1,5 +1,5 @@
-# ベンチマーク一式の依存。リポジトリルートの requirements.txt に追加で必要なもの。
-# 図の生成は matplotlib 3.7.2 / numpy 1.24.3 / scipy 1.11.1 で動作を確認している。
+# Dependencies for the benchmark, on top of the repository root requirements.txt.
+# The chart has been verified with matplotlib 3.7.2 / numpy 1.24.3 / scipy 1.11.1.
 boto3>=1.43.95
 matplotlib>=3.7
 numpy>=1.24

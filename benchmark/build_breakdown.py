@@ -1,27 +1,28 @@
-"""クライアントの記録と CloudWatch Logs の [ENTRYPOINT_REACHED] を突き合わせ、
-リクエストごとの内訳を 1 つの JSON にまとめる。
+"""Join the client records with [ENTRYPOINT_REACHED] from CloudWatch Logs and write a
+per-request breakdown to a single JSON file.
 
-  startup_ms = [ENTRYPOINT_REACHED] の時刻 - クライアントの dispatched_at
-  agent_ms   = (dispatched_at + latency_ms) - [ENTRYPOINT_REACHED] の時刻
+  startup_ms = [ENTRYPOINT_REACHED] timestamp - the client's dispatched_at
+  agent_ms   = (dispatched_at + latency_ms) - the [ENTRYPOINT_REACHED] timestamp
 
-本稿でいう pre-entrypoint が startup_ms です。キー名を startup_ms のままにしているのは、
-図の生成スクリプトとデータ形式を揃えるためです。
+What the article calls pre-entrypoint is startup_ms. The key keeps the name startup_ms so that
+the data format matches what the chart script reads.
 
-ログ検索のウィンドウは結果 JSON の dispatched_at から自動で決めます。固定ウィンドウにすると、
-V1 の pre-entrypoint が 30 秒を超えたときに取りこぼします。
+The log search window is derived from the dispatched_at values in the result JSON. A fixed
+window would drop requests once the V1 pre-entrypoint exceeds 30 seconds.
 
 usage:
   python benchmark/build_breakdown.py [suffix]
 
-  suffix    結果 JSON のラベル接尾辞。既定は open。
-            results/coldstart_results_{codezip,container}_{v1,v2}_{suffix}.json を読む。
+  suffix    Label suffix of the result JSON files; defaults to open.
+            Reads results/coldstart_results_{codezip,container}_{v1,v2}_{suffix}.json.
 
-必要な環境変数 (少なくとも一方):
-  AGENTCORE_BENCH_CODEZIP_RUNTIME_ID     CodeZip 系列のランタイム ID
-  AGENTCORE_BENCH_CONTAINER_RUNTIME_ID   Container 系列のランタイム ID
+Environment variables (at least one is required):
+  AGENTCORE_BENCH_CODEZIP_RUNTIME_ID     Runtime id for the CodeZip series
+  AGENTCORE_BENCH_CONTAINER_RUNTIME_ID   Runtime id for the Container series
 
-ランタイムを invoke してからログが Logs Insights で引けるようになるまで数分かかります。
-計測直後に実行すると照合できない件が出るため、2 分程度あけてから実行してください。
+It takes a few minutes after an invoke before the logs can be queried from Logs Insights.
+Running this immediately after a measurement leaves requests unmatched, so wait about two
+minutes first.
 """
 import json
 import os
@@ -50,9 +51,10 @@ logs = make_client("logs")
 
 
 def log_group_for(runtime_id):
-    """ロググループ名はランタイム ID とエンドポイント名から決まる。DEFAULT エンドポイントの場合は
-    -DEFAULT が付く。V1 と V2 を同じランタイム ID で切り替えて測る場合、両系列が同じロググループに
-    入るため、集計ウィンドウを計測ごとに分ける必要がある。"""
+    """The log group name follows from the runtime id and the endpoint name; the DEFAULT
+    endpoint appends -DEFAULT. When both platform versions are measured by switching the same
+    runtime id, both series land in the same log group, so the aggregation window has to be
+    separated per measurement."""
     return f"/aws/bedrock-agentcore/runtimes/{runtime_id}-DEFAULT"
 
 
@@ -68,10 +70,11 @@ def build_series():
         series["Container V2"] = (lg, f"coldstart_results_container_v2_{SUFFIX}.json")
     if not series:
         raise SystemExit(
-            "AGENTCORE_BENCH_CODEZIP_RUNTIME_ID か AGENTCORE_BENCH_CONTAINER_RUNTIME_ID の"
-            " 少なくとも一方を設定する。"
+            "Set at least one of AGENTCORE_BENCH_CODEZIP_RUNTIME_ID or"
+            " AGENTCORE_BENCH_CONTAINER_RUNTIME_ID."
         )
-    # 結果 JSON が無い系列は対象から外す。片方の方式だけ測った場合にも動くようにするためである。
+    # Drop series whose result JSON is missing, so that measuring only one deployment mode
+    # still works.
     return {k: v for k, v in series.items() if (RESULTS_DIR / v[1]).exists()}
 
 
@@ -95,19 +98,19 @@ def entrypoint_timestamps(log_group, start, end):
 
 def main():
     series = build_series()
-    print(f"対象系列: {', '.join(series)}", flush=True)
+    print(f"series: {', '.join(series)}", flush=True)
 
     def fetch(label):
         log_group, name = series[label]
         records = json.loads((RESULTS_DIR / name).read_text())
         dispatched = [r["dispatched_at"] for r in records]
-        # 前後に余裕を取る。GLOBAL_INIT_SECS を足した計測では V1 の pre-entrypoint が
-        # 30 秒を超えるため、終端側を広めにする。
+        # Pad both ends. With GLOBAL_INIT_SECS added, the V1 pre-entrypoint exceeds 30 seconds,
+        # so the trailing side is padded more generously.
         start = int(min(dispatched)) - 120
         end = int(max(dispatched)) + 300
         return label, records, entrypoint_timestamps(log_group, start, end)
 
-    # 系列ごとにクエリ ID が独立するため並行実行できる。
+    # Query ids are independent per series, so the queries can run concurrently.
     with ThreadPoolExecutor(max_workers=len(series)) as pool:
         fetched = list(pool.map(fetch, series))
 
@@ -127,16 +130,16 @@ def main():
             ttft.append(r["ttft_ms"])
             gen.append(r["latency_ms"] - r["ttft_ms"])
         if unmatched:
-            # 照合できない件を黙って捨てると分布が歪む。ログの取り込み待ちが足りていない可能性が
-            # 高いので、時間をあけて再実行する。
+            # Dropping unmatched requests silently would skew the distribution. Log ingestion
+            # most likely needs more time, so wait and re-run.
             raise SystemExit(
-                f"{label}: {unmatched} 件が ENTRYPOINT_REACHED と照合できなかった。"
-                " ログの取り込みを待って再実行する。"
+                f"{label}: {unmatched} requests could not be matched with ENTRYPOINT_REACHED."
+                " Wait for log ingestion and re-run."
             )
         if min(startup) < 0:
-            # クライアントとサーバのクロックずれ、または集計ウィンドウに前の計測のログが
-            # 混ざっている可能性がある。
-            raise SystemExit(f"{label}: startup_ms が負 (最小 {min(startup):.0f} ms)")
+            # Either the client and server clocks disagree, or logs from a previous
+            # measurement leaked into the aggregation window.
+            raise SystemExit(f"{label}: startup_ms is negative (minimum {min(startup):.0f} ms)")
         dataset[label] = {
             "total_ms": total, "startup_ms": startup, "agent_ms": agent,
             "ttft_ms": ttft, "gen_ms": gen,

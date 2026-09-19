@@ -1,9 +1,9 @@
 # invoke_runtime.py
-# ランタイムを invoke_agent_runtime で呼び、応答とレイテンシを記録する。
+# Invoke a runtime with invoke_agent_runtime and record the response and the latency.
 #
-# セッションごとに新しい runtimeSessionId を発行する。同一セッションへの再呼び出しは既存の
-# 実行環境を再利用するため、新規実行環境の起動を観測できなくなるためである。
-# 同一セッションで 2 回目を投げると、起動を含まない場合のレイテンシ (下限) が測れる。
+# Each session gets a fresh runtimeSessionId. Re-invoking the same session reuses the
+# existing execution environment, which hides the startup of a new one. A second invoke in
+# the same session gives the floor for a request that includes no startup work.
 #
 # usage:
 #   python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> [sessions] [invokes_per_session]
@@ -23,7 +23,8 @@ from botocore.config import Config
 
 from common import PROFILE, REGION, make_client, save_result
 
-# runtimeSessionId は 33 文字以上が必要である。uuid4().hex は 32 文字であり単体では足りない。
+# runtimeSessionId must be at least 33 characters. uuid4().hex is 32, so it is not enough
+# on its own.
 SESSION_ID_MIN_LEN = 33
 
 USAGE = (
@@ -35,14 +36,14 @@ USAGE = (
 def to_arn(value, client):
     if value.startswith("arn:"):
         return value
-    # ID だけが渡された場合は get_agent_runtime から ARN を引く。ARN を手で組み立てると
-    # アカウント ID とリージョンの取り違えが起きるためである。
+    # Given an id, look the ARN up with get_agent_runtime. Assembling the ARN by hand invites
+    # mixing up the account id and the Region.
     return client.get_agent_runtime(agentRuntimeId=value)["agentRuntimeArn"]
 
 
 def make_session_id(index):
     session_id = f"v2sample-{index:03d}-{uuid.uuid4().hex}"
-    assert len(session_id) >= SESSION_ID_MIN_LEN, f"runtimeSessionId が短すぎる: {len(session_id)}"
+    assert len(session_id) >= SESSION_ID_MIN_LEN, f"runtimeSessionId too short: {len(session_id)}"
     return session_id
 
 
@@ -63,8 +64,8 @@ def invoke_once(data_client, arn, session_id, seq):
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
-            # entrypoint がジェネレータを返す実装では accept の指定にかかわらず
-            # text/event-stream になる。その場合は生テキストとして扱う。
+            # An entrypoint that returns a generator responds with text/event-stream
+            # regardless of the accept header. Keep the raw text in that case.
             parsed = {"raw": text[:500]}
         return {
             "session_id": session_id,
@@ -97,8 +98,8 @@ def main():
     control_client = make_client("bedrock-agentcore-control")
     arn = to_arn(target, control_client)
 
-    # read_timeout を長めに取る。エージェントの初期化やモデル応答の生成を待つ必要があるためである。
-    # retries を 0 にするのは、自動リトライがレイテンシ計測に混入しないようにするためである。
+    # A generous read_timeout leaves room for agent initialization and model generation.
+    # retries is 0 so that automatic retries do not leak into the latency numbers.
     session = boto3.Session(profile_name=PROFILE) if PROFILE else boto3.Session()
     data_client = session.client(
         "bedrock-agentcore",
@@ -122,24 +123,25 @@ def main():
                     flush=True,
                 )
             else:
-                print(f"session={index} seq={seq} 失敗: {record['error']}", flush=True)
+                print(f"session={index} seq={seq} failed: {record['error']}", flush=True)
 
     ok = [r for r in results if r["ok"]]
     first = [r["latency_ms"] for r in ok if r["seq"] == 1]
     rest = [r["latency_ms"] for r in ok if r["seq"] > 1]
     print(f"\ntotal={len(results)} ok={len(ok)}", flush=True)
     if first:
-        print(f"新規セッションの初回 invoke: {[round(x) for x in sorted(first)]}", flush=True)
+        print(f"first invoke of a new session: {[round(x) for x in sorted(first)]}", flush=True)
     if rest:
-        # 2 回目以降は既存の実行環境に着地するため、起動を含まない場合の下限である。
-        print(f"同一セッションの 2 回目以降: {[round(x) for x in sorted(rest)]}", flush=True)
+        # Later invokes land on the existing execution environment, which is the floor for a
+        # request that includes no startup work.
+        print(f"second and later invoke in the same session: {[round(x) for x in sorted(rest)]}", flush=True)
 
-    # 新規セッションごとに identity_uuid が変わるかどうかが V1 / V2 の分かれ目である。
+    # Whether identity_uuid changes per new session is what separates V1 from V2.
     identities = {
         json.dumps((r["body"].get("snapshot_identity") or r["body"].get("baked") or {}).get("uuid"))
         for r in ok
     }
-    print(f"distinct identity uuid = {len(identities)} / {len(ok)} 件の応答", flush=True)
+    print(f"distinct identity uuid = {len(identities)} / {len(ok)} responses", flush=True)
 
     save_result(f"invoke_{target.split('/')[-1]}.json", results)
 

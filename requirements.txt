@@ -1,3 +1,3 @@
-# platformVersion に対応した最初の公開版が 1.43.95 である。
-# これ未満では送信前に ParamValidationError になり、リクエスト自体が送られない。
+# 1.43.95 is the first public release that carries the platformVersion field.
+# Below that, the request fails with ParamValidationError before it is ever sent.
 boto3>=1.43.95
