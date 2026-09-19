@@ -64,18 +64,6 @@ You specify `platformVersion` the same way for both modes. Only the artifact dif
 > [!NOTE]
 > AWS CloudFormation and the AWS CDK do not currently support setting `platformVersion`. Use the AWS SDK, the AWS CLI, or the console.
 
-## Create the prerequisite resources
-
-```bash
-python scripts/setup_prerequisites.py
-```
-
-Creates the execution role, the ECR repository and the S3 bucket, then prints the environment variables to export. A resource that already exists is left as it is.
-
-Everything it creates carries the `ManagedBy=agentcore-runtime-v2-samples` tag, which makes it a target for `scripts/cleanup.py`. Resources without that tag are never deleted.
-
-The role follows [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html). Read access to the S3 bucket holding the ZIP is not included: the service fetches the artifact itself.
-
 ## Setup
 
 ```bash
@@ -89,7 +77,21 @@ pip install -r requirements.txt
 
 Run every command below from the repository root.
 
+## Create the prerequisite resources
+
+```bash
+python scripts/setup_prerequisites.py
+```
+
+Creates the execution role, the ECR repository and the S3 bucket, then prints the environment variables to export. A resource that already exists is left as it is.
+
+Everything it creates carries the `ManagedBy=agentcore-runtime-v2-samples` tag, which makes it a target for `scripts/cleanup.py`. Resources without that tag are never deleted.
+
+The role follows [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html). Read access to the S3 bucket holding the ZIP is not included: the service fetches the artifact itself.
+
 ## Environment variables
+
+Export what `setup_prerequisites.py` printed, then fill in the rest.
 
 Set `AWS_REGION` explicitly. Without it the scripts fall back to `us-west-2`, which changes both where runtimes are created and which Region `cleanup.py` looks at.
 

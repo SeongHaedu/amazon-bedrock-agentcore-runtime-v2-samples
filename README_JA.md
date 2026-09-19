@@ -64,18 +64,6 @@ Amazon Bedrock AgentCore Runtime (以下 AgentCore Runtime) のプラットフ�
 > [!NOTE]
 > AWS CloudFormation と AWS CDK は現時点で `platformVersion` の設定に対応していません。AWS SDK、AWS CLI、またはマネジメントコンソールをご利用ください。
 
-## 前提リソースの作成
-
-```bash
-python scripts/setup_prerequisites.py
-```
-
-実行ロール、ECR リポジトリ、S3 バケットを作成し、設定すべき環境変数を出力します。既にあるリソースはそのまま使います。
-
-作成したリソースには `ManagedBy=agentcore-runtime-v2-samples` タグが付き、`scripts/cleanup.py` の削除対象になります。このタグが無いリソースは削除されません。
-
-実行ロールの権限は [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html) に従います。ZIP を置く S3 バケットの読み取り権限は含めません。アーティファクトの取得はサービス側が行います。
-
 ## セットアップ
 
 ```bash
@@ -89,7 +77,21 @@ pip install -r requirements.txt
 
 以下のコマンドはすべてリポジトリのルートから実行します。
 
+## 前提リソースの作成
+
+```bash
+python scripts/setup_prerequisites.py
+```
+
+実行ロール、ECR リポジトリ、S3 バケットを作成し、設定すべき環境変数を出力します。既にあるリソースはそのまま使います。
+
+作成したリソースには `ManagedBy=agentcore-runtime-v2-samples` タグが付き、`scripts/cleanup.py` の削除対象になります。このタグが無いリソースは削除されません。
+
+実行ロールの権限は [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html) に従います。ZIP を置く S3 バケットの読み取り権限は含めません。アーティファクトの取得はサービス側が行います。
+
 ## 環境変数
+
+`setup_prerequisites.py` が出力した export をそのまま貼り、残りを埋めます。
 
 `AWS_REGION` は明示的に設定してください。設定しない場合は `us-west-2` が使われ、ランタイムの作成先と `cleanup.py` が見るリージョンの両方が変わります。
 
