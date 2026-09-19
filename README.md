@@ -83,26 +83,29 @@ Run every command below from the repository root.
 python scripts/setup_prerequisites.py
 ```
 
-Creates the execution role, the ECR repository and the S3 bucket in `AWS_REGION` (default `us-west-2`), then prints the four exports the later steps need. Paste them and the configuration is done.
+Creates the execution role, the ECR repository and the S3 bucket in `AWS_REGION` (default `us-west-2`), and records them in `results/setup_prerequisites.json`. Every Python script in this repository reads that file, so there is nothing to export for them.
+
+The `docker` commands in Step 2 do need the values in your shell. The script writes them as an env file for that:
 
 ```bash
-export AWS_REGION=<region>
-export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/AgentCoreV2SamplesExecutionRole
-export AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.<region>.amazonaws.com/agentcore-v2-samples:v2sample
-export AGENTCORE_S3_BUCKET=agentcore-v2-samples-<account-id>-<region>
+source results/setup_prerequisites.env
 ```
 
-Set `AWS_REGION` before running it to place the resources elsewhere. For the Regions where V2 is available, see [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions).
+Set `AWS_REGION` before running the script to place the resources in another Region. For the Regions where V2 is available, see [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions). The role is global, so a second Region reuses it; its trust and permission policies are rewritten on every run and carry no Region of their own.
 
-A resource that already exists is left as it is. Everything the script creates carries the `ManagedBy=agentcore-runtime-v2-samples` tag, which makes it a target for `scripts/cleanup.py`. Resources without that tag are never deleted.
+A resource that already exists is reported and left as it is. Everything the script creates carries the `ManagedBy=agentcore-runtime-v2-samples` tag, which makes it a target for `scripts/cleanup.py`. Resources without that tag are never deleted.
 
 The role follows [IAM Permissions for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-permissions.html). Read access to the S3 bucket holding the ZIP is not included: the service fetches the artifact itself.
 
 ### Optional: environment variables
 
-Everything below has a default. Set it only when you want to change it.
+Everything below has a default, and an environment variable always wins over the saved file. Set one only when you want to change it.
 
 ```bash
+export AWS_REGION=<region>                               # where the resources and runtimes go
+export AGENTCORE_ROLE_ARN=<role-arn>                     # use a role you already have
+export AGENTCORE_CONTAINER_URI=<uri>:<tag>               # use a repository you already have
+export AGENTCORE_S3_BUCKET=<bucket-name>                 # use a bucket you already have
 export AWS_PROFILE=<profile>
 export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # S3 key for the ZIP
 export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup.py deletes only this prefix (4 chars minimum)

@@ -23,6 +23,7 @@ from common import (
     MANAGED_TAG_KEY,
     MANAGED_TAG_VALUE,
     REGION,
+    RESULTS_DIR,
     SETUP_ECR_REPOSITORY,
     SETUP_ROLE_NAME,
     SETUP_ROLE_POLICY_NAME,
@@ -30,6 +31,9 @@ from common import (
     save_result,
     setup_bucket_name,
 )
+
+# Tag the other steps build and deploy. It only has to be consistent within this repository.
+CONTAINER_TAG = "v2sample"
 
 
 def trust_policy(account_id):
@@ -42,9 +46,11 @@ def trust_policy(account_id):
                 "Effect": "Allow",
                 "Principal": {"Service": "bedrock-agentcore.amazonaws.com"},
                 "Action": "sts:AssumeRole",
+                # The Region is a wildcard because the role is global: running this script in a
+                # second Region reuses the same role rather than creating another one.
                 "Condition": {
                     "StringEquals": {"aws:SourceAccount": account_id},
-                    "ArnLike": {"aws:SourceArn": f"arn:aws:bedrock-agentcore:{REGION}:{account_id}:*"},
+                    "ArnLike": {"aws:SourceArn": f"arn:aws:bedrock-agentcore:*:{account_id}:*"},
                 },
             }
         ],
@@ -59,7 +65,9 @@ def permission_policy(account_id):
     of the documented policy. Reading the ZIP from S3 is not included: the service fetches the
     artifact itself.
     """
-    log_group = f"arn:aws:logs:{REGION}:{account_id}:log-group"
+    # Region wildcards for the same reason as the trust policy: one role serves every Region
+    # this repository is run in.
+    log_group = f"arn:aws:logs:*:{account_id}:log-group"
     return {
         "Version": "2012-10-17",
         "Statement": [
@@ -67,7 +75,7 @@ def permission_policy(account_id):
                 "Sid": "ECRImageAccess",
                 "Effect": "Allow",
                 "Action": ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer"],
-                "Resource": [f"arn:aws:ecr:{REGION}:{account_id}:repository/*"],
+                "Resource": [f"arn:aws:ecr:*:{account_id}:repository/*"],
             },
             {
                 "Sid": "ECRTokenAccess",
@@ -120,8 +128,8 @@ def permission_policy(account_id):
                     "bedrock-agentcore:GetWorkloadAccessTokenForUserId",
                 ],
                 "Resource": [
-                    f"arn:aws:bedrock-agentcore:{REGION}:{account_id}:workload-identity-directory/default",
-                    f"arn:aws:bedrock-agentcore:{REGION}:{account_id}:workload-identity-directory/default/workload-identity/*",
+                    f"arn:aws:bedrock-agentcore:*:{account_id}:workload-identity-directory/default",
+                    f"arn:aws:bedrock-agentcore:*:{account_id}:workload-identity-directory/default/workload-identity/*",
                 ],
             },
             {
@@ -130,7 +138,7 @@ def permission_policy(account_id):
                 "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
                 "Resource": [
                     "arn:aws:bedrock:*::foundation-model/*",
-                    f"arn:aws:bedrock:{REGION}:{account_id}:*",
+                    f"arn:aws:bedrock:*:{account_id}:*",
                 ],
             },
         ],
@@ -152,6 +160,12 @@ def ensure_role(iam, account_id):
             raise
         state = "exists"
         arn = iam.get_role(RoleName=SETUP_ROLE_NAME)["Role"]["Arn"]
+        # Write the trust policy back as well. A role left by an earlier run can carry a
+        # Region-specific aws:SourceArn, and create_agent_runtime in another Region then fails
+        # with "Role validation failed ... its trust policy allows assumption by this service".
+        iam.update_assume_role_policy(
+            RoleName=SETUP_ROLE_NAME, PolicyDocument=json.dumps(trust_policy(account_id))
+        )
 
     # The inline policy is written on every run so that a policy update reaches an existing
     # role as well.
@@ -180,7 +194,14 @@ def ensure_repository(ecr):
             "repositoryUri"
         ]
     print(f"  ecr        {state:8s} {uri}", flush=True)
-    return {"state": state, "name": SETUP_ECR_REPOSITORY, "uri": uri}
+    # container_uri carries the tag the other scripts push to and deploy from, so that
+    # common.py can use it as is.
+    return {
+        "state": state,
+        "name": SETUP_ECR_REPOSITORY,
+        "uri": uri,
+        "container_uri": f"{uri}:{CONTAINER_TAG}",
+    }
 
 
 def ensure_bucket(s3, bucket):
@@ -213,11 +234,20 @@ def main():
     repository = ensure_repository(make_client("ecr"))
     bucket_result = ensure_bucket(make_client("s3"), bucket)
 
-    print("\nExport these:", flush=True)
-    print(f"export AWS_REGION={REGION}", flush=True)
-    print(f"export AGENTCORE_ROLE_ARN={role['arn']}", flush=True)
-    print(f"export AGENTCORE_CONTAINER_URI={repository['uri']}:v2sample", flush=True)
-    print(f"export AGENTCORE_S3_BUCKET={bucket_result['name']}", flush=True)
+    # The Python scripts read these from results/setup_prerequisites.json, so nothing has to be
+    # exported for them. The env file exists for the docker commands in Step 2, which do need
+    # the values in the shell.
+    env_path = RESULTS_DIR / "setup_prerequisites.env"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(
+        f"export AWS_REGION={REGION}\n"
+        f"export AGENTCORE_ROLE_ARN={role['arn']}\n"
+        f"export AGENTCORE_CONTAINER_URI={repository['container_uri']}\n"
+        f"export AGENTCORE_S3_BUCKET={bucket_result['name']}\n"
+    )
+    print(f"\nwrote: {env_path}", flush=True)
+    print("  The Python scripts read the saved values on their own.", flush=True)
+    print("  For the docker commands: source results/setup_prerequisites.env", flush=True)
 
     save_result(
         "setup_prerequisites.json",

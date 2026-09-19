@@ -15,12 +15,35 @@ from botocore.exceptions import ClientError
 # ParamValidationError before the request is sent.
 MIN_BOTO3 = "1.43.95"
 
-REGION = os.environ.get("AWS_REGION", "us-west-2")
+RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
+SETUP_STATE_PATH = RESULTS_DIR / "setup_prerequisites.json"
+
+
+def _setup_state():
+    """Read back what scripts/setup_prerequisites.py recorded.
+
+    A process cannot change its parent shell's environment, so that script writes the Region,
+    role ARN, container URI and bucket name to a file instead of expecting the reader to
+    export them by hand. An explicit environment variable always wins over the file, and the
+    file simply does not exist before the script has run.
+    """
+    try:
+        return json.loads(SETUP_STATE_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+_STATE = _setup_state()
+_STATE_ROLE = _STATE.get("role") or {}
+_STATE_ECR = _STATE.get("ecr") or {}
+_STATE_S3 = _STATE.get("s3") or {}
+
+REGION = os.environ.get("AWS_REGION") or _STATE.get("region") or "us-west-2"
 PROFILE = os.environ.get("AWS_PROFILE") or None
 
-ROLE_ARN = os.environ.get("AGENTCORE_ROLE_ARN")
-CONTAINER_URI = os.environ.get("AGENTCORE_CONTAINER_URI")
-S3_BUCKET = os.environ.get("AGENTCORE_S3_BUCKET")
+ROLE_ARN = os.environ.get("AGENTCORE_ROLE_ARN") or _STATE_ROLE.get("arn")
+CONTAINER_URI = os.environ.get("AGENTCORE_CONTAINER_URI") or _STATE_ECR.get("container_uri")
+S3_BUCKET = os.environ.get("AGENTCORE_S3_BUCKET") or _STATE_S3.get("name")
 S3_PREFIX = os.environ.get("AGENTCORE_S3_PREFIX", "agentcore/codezip/agent.zip")
 CODE_RUNTIME = os.environ.get("AGENTCORE_CODE_RUNTIME", "PYTHON_3_11")
 # entryPoint is an array. Split on commas so that more than one element can be passed,
@@ -45,17 +68,26 @@ MIN_NAME_PREFIX_LEN = 4
 MANAGED_TAG_KEY = "ManagedBy"
 MANAGED_TAG_VALUE = "agentcore-runtime-v2-samples"
 
-# Names of the prerequisite resources. Override them when the defaults collide with something
-# in your account.
-SETUP_ROLE_NAME = os.environ.get("AGENTCORE_SETUP_ROLE_NAME") or "AgentCoreV2SamplesExecutionRole"
+# Names of the prerequisite resources. An environment variable wins, then what a previous run
+# of setup_prerequisites.py recorded, then the default.
+SETUP_ROLE_NAME = (
+    os.environ.get("AGENTCORE_SETUP_ROLE_NAME")
+    or _STATE_ROLE.get("name")
+    or "AgentCoreV2SamplesExecutionRole"
+)
 SETUP_ROLE_POLICY_NAME = "AgentCoreV2SamplesExecutionPolicy"
-SETUP_ECR_REPOSITORY = os.environ.get("AGENTCORE_SETUP_ECR_REPOSITORY") or "agentcore-v2-samples"
+SETUP_ECR_REPOSITORY = (
+    os.environ.get("AGENTCORE_SETUP_ECR_REPOSITORY")
+    or _STATE_ECR.get("name")
+    or "agentcore-v2-samples"
+)
 
 
 def setup_bucket_name(account_id):
     """Bucket names are globally unique, so the account id and Region are part of the default."""
     return (
         os.environ.get("AGENTCORE_SETUP_S3_BUCKET")
+        or _STATE_S3.get("name")
         or f"agentcore-v2-samples-{account_id}-{REGION}"
     )
 
@@ -118,8 +150,6 @@ ENV_VARS = agent_env_vars()
 # V1 would give up before the call completes, so keep plenty of headroom.
 TIMEOUT_SEC = int(os.environ.get("AGENTCORE_WAIT_TIMEOUT_SEC", "1800"))
 INTERVAL_SEC = 5
-
-RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 
 def require_env(name, value, hint):

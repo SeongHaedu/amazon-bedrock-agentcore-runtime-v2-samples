@@ -83,16 +83,15 @@ pip install -r requirements.txt
 python scripts/setup_prerequisites.py
 ```
 
-`AWS_REGION` (既定 `us-west-2`) に実行ロール、ECR リポジトリ、S3 バケットを作成し、以降の手順で必要な 4 つの export を出力します。出力をそのまま貼れば設定は完了です。
+`AWS_REGION` (既定 `us-west-2`) に実行ロール、ECR リポジトリ、S3 バケットを作成し、`results/setup_prerequisites.json` に記録します。本リポジトリの Python スクリプトはこのファイルを読むため、環境変数を設定する必要はありません。
+
+手順 2 の `docker` コマンドはシェル上の値を使います。そのための env ファイルも書き出します。
 
 ```bash
-export AWS_REGION=<region>
-export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/AgentCoreV2SamplesExecutionRole
-export AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.<region>.amazonaws.com/agentcore-v2-samples:v2sample
-export AGENTCORE_S3_BUCKET=agentcore-v2-samples-<account-id>-<region>
+source results/setup_prerequisites.env
 ```
 
-別のリージョンに作る場合は、実行前に `AWS_REGION` を設定してください。V2 が利用できるリージョンは [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions) をご確認ください。
+別のリージョンに作る場合は、実行前に `AWS_REGION` を設定してください。V2 が利用できるリージョンは [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions) をご確認ください。ロールはグローバルなリソースであるため、2 つ目のリージョンでは同じロールを再利用します。信頼ポリシーと権限ポリシーは実行ごとに書き直され、特定のリージョンに固定されません。
 
 既にあるリソースはそのまま使います。作成したリソースには `ManagedBy=agentcore-runtime-v2-samples` タグが付き、`scripts/cleanup.py` の削除対象になります。このタグが無いリソースは削除されません。
 
@@ -100,9 +99,13 @@ export AGENTCORE_S3_BUCKET=agentcore-v2-samples-<account-id>-<region>
 
 ### Optional: 環境変数
 
-以下はすべて既定値があります。変えたいときだけ設定してください。
+以下はすべて既定値があり、環境変数は保存されたファイルの値より優先されます。変えたいときだけ設定してください。
 
 ```bash
+export AWS_REGION=<region>                               # リソースとランタイムの作成先
+export AGENTCORE_ROLE_ARN=<role-arn>                     # 既存のロールを使う場合
+export AGENTCORE_CONTAINER_URI=<uri>:<tag>               # 既存の ECR リポジトリを使う場合
+export AGENTCORE_S3_BUCKET=<bucket-name>                 # 既存の S3 バケットを使う場合
 export AWS_PROFILE=<profile>
 export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # ZIP を置く S3 キー
 export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup.py はこのプレフィックスのみを削除 (4 文字以上)
