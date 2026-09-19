@@ -260,6 +260,30 @@ python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 1 1 --query 'A
 
 使用するモデルは `BEDROCK_MODEL_ID` で切り替えます。`us.` プレフィックスのクロスリージョン推論プロファイルが存在しないリージョンでは、リージョン別のプロファイルを指定してください。ランタイム作成時に `scripts/create_runtime.py` が引き渡します。既存のランタイムに設定する場合は `benchmark/apply_config.py` を使います。設定していないリージョンで `--query` を投げると、レスポンスの `answer` に `model call failed` として理由が入ります。
 
+### エージェントのコードを変えたら
+
+`main.py` や `requirements.txt` を変更しても、実行中のランタイムには反映されません。アーティファクトを作り直し、既存のランタイムを更新してください。同じ名前で `scripts/create_runtime.py` を実行すると `ConflictException` になります。
+
+Container の場合:
+
+```bash
+docker buildx build --platform linux/arm64 -t $AGENTCORE_CONTAINER_URI --push agent-basic/
+python benchmark/apply_config.py <agentRuntimeId> keep V2 none code_update
+```
+
+CodeZip の場合:
+
+```bash
+python scripts/setup_codezip_artifact.py agent-basic
+python benchmark/apply_config.py <agentRuntimeId> keep V2 none code_update
+```
+
+`apply_config.py` は `benchmark/` にありますが、アーティファクト・環境変数・`platformVersion` を 1 回の `update_agent_runtime` で適用する汎用のスクリプトです。第 2 引数がアーティファクトで、`keep` は現在の値を維持します。イメージタグや `AGENTCORE_S3_PREFIX` を変えた場合は新しい値を渡してください。第 3 引数の `V2` は現在のプラットフォームバージョンを明示するためのものです。
+
+Container で同じイメージタグに push した場合も、`keep` を渡した更新で新しいイメージが反映されました。`containerUri` の値は変わらないため、この挙動はドキュメントには記載がありません。us-west-2 での実測です。
+
+V2 のランタイムへの更新はスナップショットの準備を伴うため、数分かかります。手順 3 に書いたとおり、アーティファクトの差し替えでも同じです。Container で実測したところ `UPDATING` から `READY` まで 189 秒、`agentRuntimeVersion` は 1 から 2 に上がりました。
+
 ## 手順 7: コールドスタートを自分で測る
 
 記事の分布図を再現する手順です。CodeZip / Container × V1 / V2 の 4 系列について、それぞれ 100 件の新規セッションを投入します。実際のランタイムを作成し、呼び出し、CloudWatch Logs を読みます。

@@ -260,6 +260,30 @@ The Strands agent in `agent-basic` is built at module scope. On V2 that initiali
 
 `BEDROCK_MODEL_ID` selects the model. In a Region with no cross-Region inference profile carrying the `us.` prefix, pass a Region-local profile. `scripts/create_runtime.py` forwards it at create time, and `benchmark/apply_config.py` sets it on an existing runtime. Sending `--query` in a Region where it is unset puts the reason in the response as `answer: model call failed`.
 
+### After you change the agent code
+
+Editing `main.py` or `requirements.txt` does not reach a running runtime. Rebuild the artifact and update the existing runtime. Running `scripts/create_runtime.py` with the same name fails with `ConflictException`.
+
+For Container:
+
+```bash
+docker buildx build --platform linux/arm64 -t $AGENTCORE_CONTAINER_URI --push agent-basic/
+python benchmark/apply_config.py <agentRuntimeId> keep V2 none code_update
+```
+
+For CodeZip:
+
+```bash
+python scripts/setup_codezip_artifact.py agent-basic
+python benchmark/apply_config.py <agentRuntimeId> keep V2 none code_update
+```
+
+`apply_config.py` lives under `benchmark/`, but it is a general-purpose script that applies the artifact, the environment variables and `platformVersion` in a single `update_agent_runtime` call. The second argument is the artifact, and `keep` leaves it as it is. Pass the new value when you change the image tag or `AGENTCORE_S3_PREFIX`. The `V2` in the third argument states the current platform version explicitly.
+
+Pushing to the same image tag and updating with `keep` also picked up the new image. The value of `containerUri` does not change in that case, so this behavior is not documented. Measured in us-west-2.
+
+An update to a V2 runtime prepares a snapshot, so it takes minutes. As step 3 notes, swapping the artifact is no different. A Container measurement took 189 s from `UPDATING` to `READY`, and `agentRuntimeVersion` went from 1 to 2.
+
 ## Step 7: Measure cold start yourself
 
 This reproduces the distribution chart from the blog post: four series (CodeZip / Container × V1 / V2), 100 new sessions each. It creates real runtimes, invokes them, and reads CloudWatch Logs.
