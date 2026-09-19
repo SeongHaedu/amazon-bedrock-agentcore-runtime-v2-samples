@@ -169,7 +169,7 @@ ZIP を作った場合は `container` を `codezip` に置き換えます。第 
 
 `omit` は API が受け取る値ではありません。リクエストに `platformVersion` フィールドそのものを含めないことを指します。作成時は既定値が V1 であるため、`omit` で作ったランタイムは V1 で動きます。`V1` を明示した場合との差は `get_agent_runtime` のレスポンスに現れます。`omit` で作るとレスポンスに `platformVersion` キーが存在せず、`V1` を明示すると存在します。手順 4 でこの差を確認できます。
 
-更新時の `omit` は意味が変わります。作成時は「既定値を使う」ですが、更新時は「現在の値を変えない」になります。この違いは手順 5 で扱います。
+更新時の `omit` は意味が変わります。作成時は既定値の V1 が適用され、更新時は現在のプラットフォームバージョンが維持されます。どちらもドキュメントに明記されています。この違いは手順 5 で扱います。
 
 V2 の作成は環境の準備とスナップショットの取得を伴うため、秒ではなく分単位の時間がかかります。スクリプトは `get_agent_runtime` をポーリングし、`READY` または `FAILED` で終わる状態になるまで待ち、各ステータス遷移を経過時間とともに表示します。
 
@@ -214,7 +214,15 @@ python scripts/switch_platform_version.py <agentRuntimeId> V2
 - `V2` から `V1` への切り戻しは数秒で完了します。スナップショットの準備が不要なためです。
 - 既に V2 のランタイムに対して `platformVersion` を省略した更新を行うと、V2 が維持されたうえでスナップショットの準備も実行されます。
 
-2 つ目が手順 3 の説明と矛盾して見えるかもしれません。`platformVersion` を送らないことの意味が、作成時と更新時で異なるためです。作成時はフィールドが無いので既定値の V1 が適用されます。更新時はフィールドが無いことが「この項目は変更しない」という指示になるため、V2 のランタイムは V2 のままになります。V1 に戻したい場合は `V1` を明示する必要があります。
+2 つ目が手順 3 の説明と矛盾して見えるかもしれませんが、ドキュメントに明記された挙動です。[microVMs — Platform versions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions) に次の 2 文があります。
+
+> If you omit `platformVersion` when you create a runtime, the runtime uses V1.
+>
+> If you omit it when you update a runtime, the runtime keeps its current platform version.
+
+作成時の省略は既定値の V1 を意味し、更新時の省略は現在のプラットフォームバージョンの維持を意味します。V1 に戻す場合は `V1` を明示してください。
+
+なお、この記述は `platformVersion` についてのものです。他のフィールドを省略した場合に既存値が維持されるのか消えるのかは、API リファレンスにも `UpdateAgentRuntime` のページにも記載がありません。`environmentVariables` を明示的に引き継いでいるのはこのためです。
 
 ```bash
 python scripts/switch_platform_version.py <agentRuntimeId> V1     # 数秒

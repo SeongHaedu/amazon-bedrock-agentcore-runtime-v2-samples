@@ -169,7 +169,7 @@ Replace `container` with `codezip` if you built the ZIP. The third argument is t
 
 `omit` is not a value the API accepts. It means the request leaves the `platformVersion` field out entirely. On create the default is V1, so a runtime created with `omit` runs on V1. It still differs from passing `V1` explicitly in the `get_agent_runtime` response: with `omit` the `platformVersion` key is absent, and with an explicit `V1` it is present. Step 4 shows the difference.
 
-On update, `omit` means something else. On create it means "use the default"; on update it means "leave the current value alone". Step 5 covers that difference.
+On update, `omit` means something else: the default V1 applies on create, while the current platform version is kept on update. Both are documented. Step 5 covers the difference.
 
 A V2 create prepares the environment and takes a snapshot, so it takes minutes rather than seconds. The script polls `get_agent_runtime` until the status is `READY` or ends in `FAILED`, and prints each status transition with its elapsed time.
 
@@ -214,7 +214,15 @@ Two behaviors are worth seeing directly.
 - `V2` to `V1` completes in seconds. No snapshot preparation is needed.
 - Omitting `platformVersion` on a runtime that is already V2 keeps it on V2 and still prepares a snapshot.
 
-The second one may look like it contradicts step 3. Leaving the field out means different things on create and on update. On create there is no field, so the default V1 applies. On update the absent field reads as "do not change this attribute", so a V2 runtime stays on V2. Going back to V1 requires passing `V1` explicitly.
+The second one may look like it contradicts step 3, but it is documented behavior. [microVMs — Platform versions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions) carries both sentences:
+
+> If you omit `platformVersion` when you create a runtime, the runtime uses V1.
+>
+> If you omit it when you update a runtime, the runtime keeps its current platform version.
+
+Omitting it on create means the default V1; omitting it on update means the current platform version is kept. Going back to V1 requires passing `V1` explicitly.
+
+Note that this is documented for `platformVersion` specifically. Whether other omitted fields keep or lose their existing values is stated neither in the API reference nor on the `UpdateAgentRuntime` page, which is why `environmentVariables` is carried forward explicitly.
 
 ```bash
 python scripts/switch_platform_version.py <agentRuntimeId> V1     # seconds
