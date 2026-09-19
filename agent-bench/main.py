@@ -70,8 +70,14 @@ async def invoke(payload, context):
         yield {"status": "warm"}
         return
 
+    # The benchmark sends {"prompt": ...} and it is deliberately ignored, because a fixed
+    # output length is what lets generation time be treated as a constant. A payload carrying
+    # "query" is an explicit request to answer something else, so that the same runtime can
+    # be used interactively; the timing of such a run is not comparable with the benchmark.
+    prompt = payload.get("query") or FIXED_PROMPT
+
     first_token_emitted = False
-    async for event in agent.stream_async(FIXED_PROMPT):
+    async for event in agent.stream_async(prompt):
         # Strands yields text deltas as {"data": "..."}. Tool-use and metadata events are not
         # forwarded to the client.
         if isinstance(event, dict) and event.get("data"):

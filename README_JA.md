@@ -24,7 +24,7 @@ Amazon Bedrock AgentCore Runtime (以下 AgentCore Runtime) のプラットフ�
 
 ```
 .
-├── agent-basic/                 最小のエージェント。モジュールスコープとハンドラのマーカーを出力
+├── agent-basic/                 最小の Strands エージェント。モジュールスコープとハンドラのマーカーを出力
 ├── agent-bench/                 計測対象。Strands + Bedrock でストリーミングし計時マーカーを出力
 │                                各ディレクトリに main.py と Dockerfile と requirements.txt を置く
 │                                Dockerfile と ZIP 生成は同じ requirements.txt を読む
@@ -167,7 +167,9 @@ python scripts/create_runtime.py basic_v2 container V2
 
 ZIP を作った場合は `container` を `codezip` に置き換えます。第 3 引数がプラットフォームバージョンで、`V2`、`V1`、`omit` のいずれかです。
 
-`omit` は API が受け取る値ではありません。リクエストに `platformVersion` フィールドそのものを含めないことを指します。既定値が V1 であるため `omit` で作ったランタイムは V1 で動きますが、`V1` を明示した場合との差が `get_agent_runtime` のレスポンスに現れます。`omit` で作ると `platformVersion` キーが存在せず、`V1` を明示すると存在します。手順 4 でこの差を確認できます。
+`omit` は API が受け取る値ではありません。リクエストに `platformVersion` フィールドそのものを含めないことを指します。作成時は既定値が V1 であるため、`omit` で作ったランタイムは V1 で動きます。`V1` を明示した場合との差は `get_agent_runtime` のレスポンスに現れます。`omit` で作るとレスポンスに `platformVersion` キーが存在せず、`V1` を明示すると存在します。手順 4 でこの差を確認できます。
+
+更新時の `omit` は意味が変わります。作成時は「既定値を使う」ですが、更新時は「現在の値を変えない」になります。この違いは手順 5 で扱います。
 
 V2 の作成は環境の準備とスナップショットの取得を伴うため、秒ではなく分単位の時間がかかります。スクリプトは `get_agent_runtime` をポーリングし、`READY` または `FAILED` で終わる状態になるまで待ち、各ステータス遷移を経過時間とともに表示します。
 
@@ -212,6 +214,8 @@ python scripts/switch_platform_version.py <agentRuntimeId> V2
 - `V2` から `V1` への切り戻しは数秒で完了します。スナップショットの準備が不要なためです。
 - 既に V2 のランタイムに対して `platformVersion` を省略した更新を行うと、V2 が維持されたうえでスナップショットの準備も実行されます。
 
+2 つ目が手順 3 の説明と矛盾して見えるかもしれません。`platformVersion` を送らないことの意味が、作成時と更新時で異なるためです。作成時はフィールドが無いので既定値の V1 が適用されます。更新時はフィールドが無いことが「この項目は変更しない」という指示になるため、V2 のランタイムは V2 のままになります。V1 に戻したい場合は `V1` を明示する必要があります。
+
 ```bash
 python scripts/switch_platform_version.py <agentRuntimeId> V1     # 数秒
 python scripts/switch_platform_version.py <agentRuntimeId> omit   # 数分。V2 のまま維持される。
@@ -233,6 +237,20 @@ python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 3 2
 
 - V2 では値がまとまります。Container のランタイムに 3 セッションを投げた実測では 1 でした。すべてのインスタンスが同一のスナップショットから復元されています。バーストの規模が大きい場合は 1 を超えることがあるため、常に 1 になるとは考えないでください。
 - V1 では、新しく起動した実行環境の数と一致します。それぞれが自分でモジュールスコープを実行しています。
+
+### 任意の質問を投げる
+
+`--query` を渡すと、その質問が Strands エージェント経由で Bedrock に送られ、回答がレスポンスに含まれます。
+
+```bash
+python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 1 1 --query 'AgentCore Runtime の platformVersion V2 の利点を教えてください'
+```
+
+`--query` を省略した場合はモデルを呼びません。上記の `distinct identity uuid` の比較では、モデル側の変動を混ぜないために省略してください。
+
+`agent-basic` の Strands エージェントはモジュールスコープで構築されます。V2 ではこの初期化がスナップショットに含まれ、V1 では実行環境ごとに繰り返されます。手順 7 で計測する差は、この構造から生まれます。
+
+使用するモデルは `BEDROCK_MODEL_ID` で切り替えます。`us.` プレフィックスのクロスリージョン推論プロファイルが存在しないリージョンでは、リージョン別のプロファイルを指定してください。ランタイム作成時に `scripts/create_runtime.py` が引き渡します。既存のランタイムに設定する場合は `benchmark/apply_config.py` を使います。設定していないリージョンで `--query` を投げると、レスポンスの `answer` に `model call failed` として理由が入ります。
 
 ## 手順 7: コールドスタートを自分で測る
 

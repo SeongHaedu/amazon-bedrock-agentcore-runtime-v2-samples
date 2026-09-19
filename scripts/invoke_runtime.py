@@ -7,9 +7,16 @@
 #
 # usage:
 #   python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> [sessions] [invokes_per_session]
+#                                    [--query '<question>']
 #
 # example:
 #   python scripts/invoke_runtime.py v2sample_basic_v2-XXXXXXXXXX 3 2
+#   python scripts/invoke_runtime.py v2sample_bench_container-XXXXXXXXXX 1 1 --query 'What is a microVM?'
+#
+# --query sends a question. Both agents answer it through Strands: agent-basic returns the
+# text in the "answer" field, and agent-bench streams it. Without --query neither calls a
+# model, which keeps the latency of a plain invoke free of model-side variance.
+import argparse
 import json
 import sys
 import time
@@ -27,10 +34,29 @@ from common import PROFILE, REGION, make_client, save_result
 # on its own.
 SESSION_ID_MIN_LEN = 33
 
-USAGE = (
-    "usage: python scripts/invoke_runtime.py "
-    "<agentRuntimeId|agentRuntimeArn> [sessions] [invokes_per_session]"
-)
+DEFAULT_PROMPT = "ping"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Invoke a runtime and record the response and the latency.",
+    )
+    parser.add_argument("target", help="agentRuntimeId or agentRuntimeArn")
+    parser.add_argument("sessions", nargs="?", type=int, default=3, help="default: 3")
+    parser.add_argument(
+        "invokes_per_session", nargs="?", type=int, default=2, help="default: 2"
+    )
+    parser.add_argument(
+        "--query",
+        default=None,
+        metavar="TEXT",
+        help=(
+            "question to send. Both agents answer it through Strands. Omitted, the payload "
+            f'carries "{DEFAULT_PROMPT}" and no model is called, which is what the identity '
+            "comparison needs."
+        ),
+    )
+    return parser.parse_args()
 
 
 def to_arn(value, client):
@@ -47,7 +73,7 @@ def make_session_id(index):
     return session_id
 
 
-def invoke_once(data_client, arn, session_id, seq):
+def invoke_once(data_client, arn, session_id, seq, payload_obj):
     t0 = time.monotonic()
     dispatched_at = time.time()
     try:
@@ -56,7 +82,7 @@ def invoke_once(data_client, arn, session_id, seq):
             contentType="application/json",
             accept="application/json",
             runtimeSessionId=session_id,
-            payload=json.dumps({"prompt": "ping"}).encode(),
+            payload=json.dumps(payload_obj).encode(),
         )
         body = resp["response"].read() if "response" in resp else b""
         latency_ms = (time.monotonic() - t0) * 1000
@@ -88,12 +114,32 @@ def invoke_once(data_client, arn, session_id, seq):
         }
 
 
+def answer_text(body):
+    """Pull the agent's answer out of the response. agent-basic returns a dict carrying
+    "answer"; agent-bench returns a generator, so the response is text/event-stream and
+    invoke_once keeps it under "raw". An agent that ignores the query has neither, in which
+    case "echo" is what came back."""
+    if not isinstance(body, dict):
+        return None
+    if body.get("answer"):
+        return str(body["answer"]).strip() or None
+    if "raw" in body:
+        return body["raw"].strip() or None
+    echo = body.get("echo")
+    if isinstance(echo, dict) and echo.get("query"):
+        return f"(echoed without an answer) {echo['query']}"
+    return None
+
+
 def main():
-    if len(sys.argv) < 2:
-        raise SystemExit(USAGE)
-    target = sys.argv[1]
-    sessions = int(sys.argv[2]) if len(sys.argv) > 2 else 3
-    per_session = int(sys.argv[3]) if len(sys.argv) > 3 else 2
+    args = parse_args()
+    target = args.target
+    sessions = args.sessions
+    per_session = args.invokes_per_session
+    show_answer = args.query is not None
+    # The benchmark sends {"prompt": ...} and both agents ignore it, so a question goes in a
+    # separate "query" key. Without --query the payload stays exactly as it was.
+    payload_obj = {"query": args.query} if show_answer else {"prompt": DEFAULT_PROMPT}
 
     control_client = make_client("bedrock-agentcore-control")
     arn = to_arn(target, control_client)
@@ -111,7 +157,7 @@ def main():
     for index in range(sessions):
         session_id = make_session_id(index)
         for seq in range(1, per_session + 1):
-            record = invoke_once(data_client, arn, session_id, seq)
+            record = invoke_once(data_client, arn, session_id, seq, payload_obj)
             results.append(record)
             if record["ok"]:
                 body = record["body"]
@@ -122,6 +168,9 @@ def main():
                     f"lazy_ran={body.get('lazy_ran')}",
                     flush=True,
                 )
+                if show_answer:
+                    answer = answer_text(body)
+                    print(f"    answer: {answer if answer else '(none in response)'}", flush=True)
             else:
                 print(f"session={index} seq={seq} failed: {record['error']}", flush=True)
 

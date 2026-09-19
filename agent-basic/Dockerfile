@@ -4,8 +4,8 @@ WORKDIR /app
 
 # Dependencies are managed in requirements.txt. scripts/setup_codezip_artifact.py, which
 # builds the ZIP for direct code deployment, reads the same file, so there is nothing to keep
-# in sync by hand. Only bedrock-agentcore is listed: this sample calls no LLM, and a smaller
-# image also means a smaller effect on how long snapshot preparation takes.
+# in sync by hand. strands-agents is listed because the agent answers a question when the
+# payload carries one. A plain invoke still calls no LLM.
 COPY requirements.txt ./
 RUN uv pip install --system --no-cache -r requirements.txt
 

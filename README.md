@@ -24,7 +24,7 @@ You specify `platformVersion` the same way for both modes. Only the artifact dif
 
 ```
 .
-├── agent-basic/                 Minimal agent. Prints module-scope and handler markers.
+├── agent-basic/                 Minimal Strands agent. Prints module-scope and handler markers.
 ├── agent-bench/                 Benchmark target. Strands + Bedrock, streaming, timing markers.
 │                                Each agent dir holds main.py, Dockerfile and requirements.txt.
 │                                The Dockerfile and the ZIP builder read the same requirements.txt.
@@ -167,7 +167,9 @@ python scripts/create_runtime.py basic_v2 container V2
 
 Replace `container` with `codezip` if you built the ZIP. The third argument is the platform version: `V2`, `V1`, or `omit`.
 
-`omit` is not a value the API accepts. It means the request leaves the `platformVersion` field out entirely. The default is V1, so a runtime created with `omit` runs on V1, but it differs from passing `V1` explicitly in the `get_agent_runtime` response: with `omit` the `platformVersion` key is absent, and with an explicit `V1` it is present. Step 4 shows the difference.
+`omit` is not a value the API accepts. It means the request leaves the `platformVersion` field out entirely. On create the default is V1, so a runtime created with `omit` runs on V1. It still differs from passing `V1` explicitly in the `get_agent_runtime` response: with `omit` the `platformVersion` key is absent, and with an explicit `V1` it is present. Step 4 shows the difference.
+
+On update, `omit` means something else. On create it means "use the default"; on update it means "leave the current value alone". Step 5 covers that difference.
 
 A V2 create prepares the environment and takes a snapshot, so it takes minutes rather than seconds. The script polls `get_agent_runtime` until the status is `READY` or ends in `FAILED`, and prints each status transition with its elapsed time.
 
@@ -212,6 +214,8 @@ Two behaviors are worth seeing directly.
 - `V2` to `V1` completes in seconds. No snapshot preparation is needed.
 - Omitting `platformVersion` on a runtime that is already V2 keeps it on V2 and still prepares a snapshot.
 
+The second one may look like it contradicts step 3. Leaving the field out means different things on create and on update. On create there is no field, so the default V1 applies. On update the absent field reads as "do not change this attribute", so a V2 runtime stays on V2. Going back to V1 requires passing `V1` explicitly.
+
 ```bash
 python scripts/switch_platform_version.py <agentRuntimeId> V1     # seconds
 python scripts/switch_platform_version.py <agentRuntimeId> omit   # minutes, stays on V2
@@ -233,6 +237,20 @@ The arguments are the number of sessions and the number of invokes per session. 
 
 - On V2 it collapses. Three sessions against a Container runtime reported 1: every instance was restored from the same snapshot. A larger burst can report more than 1, so do not treat 1 as a guarantee.
 - On V1 it matches the number of new execution environments. Each one ran module scope itself.
+
+### Ask it a question
+
+With `--query`, the question goes through the Strands agent to Bedrock and the answer comes back in the response.
+
+```bash
+python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 1 1 --query 'What does platformVersion V2 buy me?'
+```
+
+Without `--query` no model is called. Leave it out for the `distinct identity uuid` comparison above, so that model-side variance stays out of it.
+
+The Strands agent in `agent-basic` is built at module scope. On V2 that initialization is part of the snapshot; on V1 it is repeated per execution environment. The difference measured in step 7 comes from exactly this shape.
+
+`BEDROCK_MODEL_ID` selects the model. In a Region with no cross-Region inference profile carrying the `us.` prefix, pass a Region-local profile. `scripts/create_runtime.py` forwards it at create time, and `benchmark/apply_config.py` sets it on an existing runtime. Sending `--query` in a Region where it is unset puts the reason in the response as `answer: model call failed`.
 
 ## Step 7: Measure cold start yourself
 

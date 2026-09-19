@@ -127,7 +127,7 @@ def agent_env_vars():
     PYTHONUNBUFFERED is always set so that the [MODULE_START] / [ENTRYPOINT_REACHED] markers
     reach CloudWatch Logs immediately. Anything else comes from the caller:
 
-      BEDROCK_MODEL_ID       forwarded under the same name when set. agent-bench reads it.
+      BEDROCK_MODEL_ID       forwarded under the same name when set. Both agents read it.
                              Regions without a us.-prefixed cross-Region inference profile
                              (ap-northeast-1, for example) need a Region-local profile here.
       AGENTCORE_ENV_EXTRA    "KEY=VALUE,KEY2=VALUE2" for anything else the agent reads.
