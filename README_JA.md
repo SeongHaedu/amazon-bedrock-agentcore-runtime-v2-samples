@@ -9,6 +9,8 @@ Amazon Bedrock AgentCore Runtime (以下 AgentCore Runtime) のプラットフ�
 
 本リポジトリのスクリプトで、V2 ランタイムの作成、既存の V1 ランタイムから V2 への移行、プラットフォームバージョンの確認、呼び出し、そしてコールドスタートの計測ができます。
 
+本来であれば [AgentCore CLI](https://github.com/aws/agentcore-cli) で運用するところです。ただし 2026 年 9 月 19 日時点では `platformVersion` に対応していないように見えます。同リポジトリを検索しても `platformVersion` の記述が見つからないためです。そこで本リポジトリでは boto3 で直接 API を呼ぶカスタムスクリプトを用意しています。CLI が対応した後はそちらをご利用ください。
+
 解説記事: https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-platform-version
 
 ![platformVersion による起動経路の違い](./images/ja/v1_v2_startup_path.png)

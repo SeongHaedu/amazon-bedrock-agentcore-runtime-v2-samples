@@ -9,6 +9,8 @@ Sample code for trying out platform version V2 of Amazon Bedrock AgentCore Runti
 
 Use the scripts in this repository to create a V2 runtime, migrate an existing V1 runtime to V2, confirm the platform version, invoke the runtime, and measure cold start.
 
+The [AgentCore CLI](https://github.com/aws/agentcore-cli) would normally be the tool for this. As of September 19, 2026 it does not appear to support `platformVersion`: searching that repository turns up no mention of it. The scripts here call the API directly with boto3 instead. Once the CLI supports it, use the CLI.
+
 Blog post (Japanese): https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-platform-version
 
 ![Startup paths by platformVersion](./images/en/v1_v2_startup_path.png)
