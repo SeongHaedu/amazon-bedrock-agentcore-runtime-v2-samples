@@ -1,16 +1,16 @@
 # cleanup_runtimes.py
-# AGENTCORE_NAME_PREFIX (既定 "v2sample_") で始まるランタイムのみを削除する。
+# Delete only the runtimes whose name starts with AGENTCORE_NAME_PREFIX (default "v2sample_").
 #
-# 安全策は 4 点である。
-#   1. プレフィックスの長さの下限を実行時に検証する。空文字列は全ランタイムに一致するため、
-#      これが無いと以降の 2 つの安全策が意味を持たなくなる。
-#   2. プレフィックスの一致を列挙時とループ内の両方で検証する。
-#   3. --yes を付けない場合は対象一覧の表示だけで終了し、削除しない。
-#   4. 削除の完了判定は ResourceNotFoundException と DELETE_FAILED の両方を見る。
+# Four safeguards:
+#   1. The minimum prefix length is checked at runtime. An empty prefix matches every runtime,
+#      which would make the other two safeguards meaningless.
+#   2. The prefix is matched both when listing and inside the loop.
+#   3. Without --yes the script prints the targets and exits without deleting.
+#   4. Deletion is complete on ResourceNotFoundException or DELETE_FAILED, not just the former.
 #
 # usage:
-#   python scripts/cleanup_runtimes.py          # 対象を表示するだけ
-#   python scripts/cleanup_runtimes.py --yes    # 実際に削除する
+#   python scripts/cleanup_runtimes.py          # print the targets only
+#   python scripts/cleanup_runtimes.py --yes    # actually delete
 import sys
 from pathlib import Path
 
@@ -29,12 +29,12 @@ from common import (
 
 
 def main():
-    # 空文字列や極端に短いプレフィックスでは、意図しないランタイムまで一致してしまう。
-    # AWS を呼ぶ前に落とす。
+    # An empty or very short prefix would match runtimes that were never meant to be touched.
+    # Fail before calling AWS.
     if len(NAME_PREFIX) < MIN_NAME_PREFIX_LEN:
         raise SystemExit(
-            f"AGENTCORE_NAME_PREFIX が短すぎる ({NAME_PREFIX!r})。"
-            f" 誤削除を防ぐため {MIN_NAME_PREFIX_LEN} 文字以上を要求する。"
+            f"AGENTCORE_NAME_PREFIX is too short ({NAME_PREFIX!r})."
+            f" At least {MIN_NAME_PREFIX_LEN} characters are required to prevent accidental deletion."
         )
 
     apply_delete = "--yes" in sys.argv[1:]
@@ -42,11 +42,11 @@ def main():
     candidates = list_sample_runtimes(client)
 
     if not candidates:
-        print(f"プレフィックス {NAME_PREFIX!r} に一致するランタイムは見つからなかった。", flush=True)
+        print(f"No runtime matches the prefix {NAME_PREFIX!r}.", flush=True)
         save_result("cleanup.json", {"applied": apply_delete, "targets": []})
         return
 
-    print(f"削除対象 (プレフィックス {NAME_PREFIX!r}):", flush=True)
+    print(f"Deletion targets (prefix {NAME_PREFIX!r}):", flush=True)
     for runtime in candidates:
         print(
             f"  - {runtime['agentRuntimeName']} ({runtime['agentRuntimeId']}) "
@@ -55,7 +55,7 @@ def main():
         )
 
     if not apply_delete:
-        print("\n--yes を付けずに実行したため削除しない。削除するには --yes を付けて再実行する。", flush=True)
+        print("\nRan without --yes, so nothing was deleted. Re-run with --yes to delete.", flush=True)
         save_result(
             "cleanup.json",
             {"applied": False, "targets": [r["agentRuntimeName"] for r in candidates]},
@@ -67,7 +67,7 @@ def main():
         name = runtime["agentRuntimeName"]
         runtime_id = runtime["agentRuntimeId"]
         if not name.startswith(NAME_PREFIX):
-            print(f"[skip] {name} はプレフィックスに一致しないためスキップする", flush=True)
+            print(f"[skip] {name} does not match the prefix", flush=True)
             continue
 
         print(f"[{name}] delete_agent_runtime id={runtime_id}", flush=True)
@@ -83,7 +83,7 @@ def main():
                     "message": error.response["Error"]["Message"],
                 }
             )
-            print(f"[{name}] 削除リクエスト失敗: {error.response['Error']['Code']}", flush=True)
+            print(f"[{name}] delete request failed: {error.response['Error']['Code']}", flush=True)
             continue
 
         final_status, elapsed_sec = wait_until_deleted(client, runtime_id)

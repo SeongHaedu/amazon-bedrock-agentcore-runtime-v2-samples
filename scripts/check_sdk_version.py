@@ -1,6 +1,6 @@
 # check_sdk_version.py
-# AWS を一切呼ばない。導入済みの boto3 / botocore が platformVersion に対応しているかを
-# ローカルのサービスモデルだけで判定する。最初に実行するスクリプトである。
+# Makes no AWS calls. Decides from the local service model alone whether the installed
+# boto3 / botocore supports platformVersion. Run this first.
 import re
 import sys
 from pathlib import Path
@@ -14,11 +14,12 @@ from common import MIN_BOTO3, platform_version_supported, save_result
 
 
 def version_tuple(version_str):
-    """バージョン比較は tuple(int) で行う。文字列比較では "1.43.9" > "1.43.95" と誤判定する。
+    """Compare versions as tuples of ints. String comparison would read "1.43.9" as newer
+    than "1.43.95".
 
-    split(".") ではなく数字だけを抽出するのは、リリース候補や開発ビルド ("1.44.0rc1"、
-    "1.43.96.dev0" 等) が入っている環境で int() が ValueError を投げるのを避けるためである。
-    このスクリプトは最初に実行するものであり、バージョン文字列の形で落ちてはならない。
+    Digits are extracted rather than split on "." so that release candidates and dev builds
+    ("1.44.0rc1", "1.43.96.dev0") do not make int() raise ValueError. This is the first
+    script a reader runs; it must not fail on the shape of a version string.
     """
     return tuple(int(m) for m in re.findall(r"\d+", version_str))
 
@@ -60,7 +61,7 @@ def main():
 
     if not supported:
         print(
-            f"\npip install --upgrade 'boto3>={MIN_BOTO3}' を実行してから再度確認する。",
+            f"\nRun pip install --upgrade 'boto3>={MIN_BOTO3}' and check again.",
             flush=True,
         )
         sys.exit(1)

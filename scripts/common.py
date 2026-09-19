@@ -1,8 +1,8 @@
 # common.py
-# 全スクリプトが共有する設定とヘルパー。
+# Shared configuration and helpers for every script.
 #
-# 設定はすべて環境変数から読む。アカウント ID・ロール ARN・ECR URI・S3 バケット名を
-# リポジトリにハードコードしないためである。未設定の必須項目は実行時に明示的に落とす。
+# All settings come from environment variables. Account ids, role ARNs, ECR URIs and bucket
+# names are never hardcoded in this repository. Required values fail loudly at runtime.
 import json
 import os
 import time
@@ -11,7 +11,8 @@ from pathlib import Path
 import boto3
 from botocore.exceptions import ClientError
 
-# platformVersion に対応した最初の公開版である。これ未満では送信前に ParamValidationError が返る。
+# First public release that carries the platformVersion field. Earlier versions raise
+# ParamValidationError before the request is sent.
 MIN_BOTO3 = "1.43.95"
 
 REGION = os.environ.get("AWS_REGION", "us-west-2")
@@ -22,27 +23,78 @@ CONTAINER_URI = os.environ.get("AGENTCORE_CONTAINER_URI")
 S3_BUCKET = os.environ.get("AGENTCORE_S3_BUCKET")
 S3_PREFIX = os.environ.get("AGENTCORE_S3_PREFIX", "agentcore/codezip/agent.zip")
 CODE_RUNTIME = os.environ.get("AGENTCORE_CODE_RUNTIME", "PYTHON_3_11")
-# entryPoint は配列である。OpenTelemetry の計装を挟む場合など複数要素を渡せるよう、
-# カンマ区切りで分割する。例: AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"
+# entryPoint is an array. Split on commas so that more than one element can be passed,
+# for example AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py".
 ENTRY_POINT = [p.strip() for p in os.environ.get("AGENTCORE_ENTRY_POINT", "main.py").split(",") if p.strip()]
 
-# 作成するランタイム名に付けるプレフィックス。cleanup_runtimes.py はこのプレフィックスを
-# 持つランタイムのみを削除対象にする。既存リソースを誤って削除しないための安全策である。
+# Prefix applied to every runtime name this repository creates. cleanup_runtimes.py deletes
+# only runtimes carrying this prefix, which keeps it from touching unrelated resources.
 #
-# os.environ.get の既定値ではなく or で落とすのは、AGENTCORE_NAME_PREFIX="" のように
-# 空文字列で export された場合にキーが存在してしまい、既定値が適用されないためである。
-# 空文字列だと "任意の名前".startswith("") が常に True になり、アカウント・リージョン内の
-# 全ランタイムが削除対象に含まれる。cleanup_runtimes.py 側でも長さの下限を検証する。
+# The default is applied with `or` rather than os.environ.get's default argument: exporting
+# AGENTCORE_NAME_PREFIX="" puts the key in the environment, so the default would not apply.
+# An empty prefix makes "any name".startswith("") true and would match every runtime in the
+# account and Region. cleanup_runtimes.py also enforces a minimum length.
 NAME_PREFIX = os.environ.get("AGENTCORE_NAME_PREFIX") or "v2sample_"
 
-# クリーンアップで要求するプレフィックスの最小長。短いプレフィックスは削除範囲が広がりすぎる。
+# Minimum prefix length required for cleanup. A short prefix deletes too much.
 MIN_NAME_PREFIX_LEN = 4
 
 NETWORK = {"networkMode": "PUBLIC"}
-ENV_VARS = {"PYTHONUNBUFFERED": "1"}
 
-# V2 の create / update はスナップショット準備のため分単位かかる。V1 の所要時間を前提にした
-# 短いタイムアウトでは完了を待たずに打ち切ってしまうため、十分な余裕を取る。
+
+def parse_env_extra(raw):
+    """Parse AGENTCORE_ENV_EXTRA ("KEY=VALUE,KEY2=VALUE2") into a dict.
+
+    Values containing a comma are not supported; pass those through the agent code or a
+    separate mechanism instead. An entry without "=" is a configuration mistake and fails
+    here rather than silently dropping the value.
+    """
+    if not raw:
+        return {}
+    extra = {}
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise SystemExit(
+                f"AGENTCORE_ENV_EXTRA entry is not KEY=VALUE: {item!r}"
+            )
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise SystemExit(f"AGENTCORE_ENV_EXTRA entry has an empty key: {item!r}")
+        extra[key] = value.strip()
+    return extra
+
+
+def agent_env_vars():
+    """Environment variables handed to the agent.
+
+    PYTHONUNBUFFERED is always set so that the [MODULE_START] / [ENTRYPOINT_REACHED] markers
+    reach CloudWatch Logs immediately. Anything else comes from the caller:
+
+      BEDROCK_MODEL_ID       forwarded under the same name when set. agent-bench reads it.
+                             Regions without a us.-prefixed cross-Region inference profile
+                             (ap-northeast-1, for example) need a Region-local profile here.
+      AGENTCORE_ENV_EXTRA    "KEY=VALUE,KEY2=VALUE2" for anything else the agent reads.
+
+    V2 caps the total size of these variables at 1.5 KB for direct code deployments and
+    2.5 KB for container agents, against 4 KB on V1.
+    """
+    env = {"PYTHONUNBUFFERED": "1"}
+    env.update(parse_env_extra(os.environ.get("AGENTCORE_ENV_EXTRA")))
+    model_id = os.environ.get("BEDROCK_MODEL_ID")
+    if model_id:
+        env["BEDROCK_MODEL_ID"] = model_id
+    return env
+
+
+# Evaluated once at import time so that every script in a single run sees the same set.
+ENV_VARS = agent_env_vars()
+
+# A V2 create or update takes minutes because the snapshot is prepared. A timeout sized for
+# V1 would give up before the call completes, so keep plenty of headroom.
 TIMEOUT_SEC = int(os.environ.get("AGENTCORE_WAIT_TIMEOUT_SEC", "1800"))
 INTERVAL_SEC = 5
 
@@ -51,7 +103,7 @@ RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
 def require_env(name, value, hint):
     if not value:
-        raise SystemExit(f"環境変数 {name} が未設定である。{hint}")
+        raise SystemExit(f"Environment variable {name} is not set. {hint}")
     return value
 
 
@@ -61,20 +113,20 @@ def make_client(service):
 
 
 def artifact_for(kind):
-    """container と codezip のどちらでも platformVersion の指定方法は同じである。
-    アーティファクトの形だけが異なる。"""
+    """platformVersion is specified the same way for container and codezip deployments.
+    Only the artifact differs."""
     if kind == "container":
         require_env(
             "AGENTCORE_CONTAINER_URI",
             CONTAINER_URI,
-            "ECR の <account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag> を設定する。",
+            "Set it to <account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag>.",
         )
         return {"containerConfiguration": {"containerUri": CONTAINER_URI}}
     if kind == "codezip":
         require_env(
             "AGENTCORE_S3_BUCKET",
             S3_BUCKET,
-            "scripts/setup_codezip_artifact.py でアップロード先に使う S3 バケット名を設定する。",
+            "Set the S3 bucket that scripts/setup_codezip_artifact.py uploads to.",
         )
         return {
             "codeConfiguration": {
@@ -83,19 +135,19 @@ def artifact_for(kind):
                 "entryPoint": ENTRY_POINT,
             }
         }
-    raise SystemExit(f"未知のアーティファクト種別である: {kind} (container か codezip を指定する)")
+    raise SystemExit(f"Unknown artifact kind: {kind} (use container or codezip)")
 
 
 def platform_version_supported():
-    """導入済み botocore のサービスモデルに platformVersion が含まれるかを調べる。
-    バージョン文字列ではなくサービスモデルで判定するのは、バージョン番号が新しくても
-    当該フィールドを含まないビルドが存在しうるためである。"""
+    """Report whether the installed botocore service model carries platformVersion.
+    The service model is checked rather than the version string because a build with a
+    newer version number can still lack the field."""
     import botocore.session
 
     model = botocore.session.get_session().get_service_model("bedrock-agentcore-control")
     return {
-        # create / update はリクエスト側、get はレスポンス側に platformVersion を持つ。
-        # GetAgentRuntime のリクエストには存在しないのが正しい仕様である。
+        # create / update carry platformVersion on the request; get carries it on the
+        # response. Its absence from the GetAgentRuntime input is the correct behavior.
         "create_input": "platformVersion" in model.operation_model("CreateAgentRuntime").input_shape.members,
         "update_input": "platformVersion" in model.operation_model("UpdateAgentRuntime").input_shape.members,
         "get_output": "platformVersion" in model.operation_model("GetAgentRuntime").output_shape.members,
@@ -103,10 +155,12 @@ def platform_version_supported():
 
 
 def wait_until_ready(client, agent_runtime_id, timeout_sec=TIMEOUT_SEC, interval_sec=INTERVAL_SEC):
-    """終端判定は status == "READY" または status.endswith("FAILED") で行う。
-    失敗ステータスを網羅列挙しないのは、一覧に無い失敗が返った場合にループが止まらなくなる
-    事態を避けるためである。AgentCore Runtime には waiter が用意されていないため、
-    次の呼び出しに進む前にこのポーリングで終端状態を確認する必要がある。"""
+    """Terminal state is status == "READY" or status.endswith("FAILED").
+
+    Failure statuses are matched by suffix rather than enumerated: a failure status missing
+    from the list would leave this loop spinning forever. AgentCore Runtime ships no waiter,
+    so this poll is what confirms a terminal state before the next call.
+    """
     start = time.monotonic()
     transitions = []
     last = None
@@ -125,9 +179,11 @@ def wait_until_ready(client, agent_runtime_id, timeout_sec=TIMEOUT_SEC, interval
 
 
 def wait_until_deleted(client, agent_runtime_id, timeout_sec=600, interval_sec=5):
-    """削除の完了判定は ResourceNotFoundException と DELETE_FAILED の両方を見る。
-    ResourceNotFoundException のみを条件にすると、DELETE_FAILED になった場合に
-    ループが終わらない。wait_until_ready は削除の判定には再利用できない。"""
+    """Deletion is complete on ResourceNotFoundException or DELETE_FAILED.
+
+    Waiting only for ResourceNotFoundException would spin forever once a delete ends in
+    DELETE_FAILED. wait_until_ready cannot be reused for deletion.
+    """
     start = time.monotonic()
     while True:
         try:
@@ -144,8 +200,8 @@ def wait_until_deleted(client, agent_runtime_id, timeout_sec=600, interval_sec=5
 
 
 def describe_platform_version(client, agent_runtime_id):
-    """get_agent_runtime を呼び、platformVersion のキーの有無と値を分けて記録する。
-    判定コードは resp.get("platformVersion", "V1") の形で書くのが安全である。"""
+    """Call get_agent_runtime and record the presence of the platformVersion key separately
+    from its value. Write your own checks as resp.get("platformVersion", "V1")."""
     resp = client.get_agent_runtime(agentRuntimeId=agent_runtime_id)
     return {
         "platform_version": resp.get("platformVersion"),
@@ -157,8 +213,8 @@ def describe_platform_version(client, agent_runtime_id):
 
 
 def list_sample_runtimes(client):
-    """NAME_PREFIX を持つランタイムのみを列挙する。list_agent_runtimes のレスポンスには
-    platformVersion が含まれないため、値が必要な場合は get_agent_runtime を個別に呼ぶ。"""
+    """List only the runtimes carrying NAME_PREFIX. list_agent_runtimes does not return
+    platformVersion, so call get_agent_runtime when the value is needed."""
     paginator = client.get_paginator("list_agent_runtimes")
     found = []
     for page in paginator.paginate():
@@ -169,8 +225,8 @@ def list_sample_runtimes(client):
 
 
 def jsonable(obj):
-    """createdAt / lastUpdatedAt は datetime であり json.dumps がそのままでは扱えない。
-    読み取り不能なオブジェクトは repr に落とし、記録が欠落しないようにする。"""
+    """createdAt / lastUpdatedAt are datetimes that json.dumps cannot serialize as they are.
+    Unreadable objects fall back to repr so that nothing is dropped from the record."""
     from datetime import date, datetime
 
     if isinstance(obj, (datetime, date)):

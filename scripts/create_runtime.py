@@ -1,13 +1,13 @@
 # create_runtime.py
-# platformVersion を指定して (または省略して) エージェントランタイムを作成し、
-# READY までの所要時間を計測する。V1 と V2 の作成コストの差がそのまま数値で出る。
+# Create an agent runtime with platformVersion set (or omitted) and time how long it takes
+# to reach READY. The difference in creation cost between V1 and V2 comes out as a number.
 #
 # usage:
 #   python scripts/create_runtime.py <suffix> <container|codezip> [V1|V2|omit]
 #
 # example:
-#   python scripts/create_runtime.py basic_v2 container V2      # V2 を明示して作成する
-#   python scripts/create_runtime.py basic_v1 container omit    # 省略して作成する (V1 として作成される)
+#   python scripts/create_runtime.py basic_v2 container V2      # create with V2 set
+#   python scripts/create_runtime.py basic_v1 container omit    # create with it omitted (V1)
 import sys
 import time
 from pathlib import Path
@@ -44,14 +44,14 @@ def timed_create(client, name, artifact, platform_version):
     if platform_version != "omit":
         kwargs["platformVersion"] = platform_version
 
-    # 計時は API 呼び出しの前から始める。ポーリング開始以降しか測らないと、
-    # API 呼び出し自体の時間が落ちてしまうためである。
+    # Start timing before the API call. Timing only from the first poll would drop the
+    # duration of the call itself.
     t0 = time.monotonic()
     try:
         created = client.create_agent_runtime(**kwargs)
     except ParamValidationError as error:
-        # 送信前に botocore が拒否した場合。boto3 が platformVersion 未対応のバージョンだと
-        # ここに落ちる。scripts/check_sdk_version.py を先に実行して切り分ける。
+        # botocore rejected the request before sending it, which is what happens when the
+        # installed boto3 has no platformVersion field. Run scripts/check_sdk_version.py.
         return {"ok": False, "error_type": "ParamValidationError", "message": str(error)}
     except ClientError as error:
         return {
@@ -61,7 +61,7 @@ def timed_create(client, name, artifact, platform_version):
         }
 
     api_sec = time.monotonic() - t0
-    print(f"    create 応答: status={created['status']} ({api_sec:.2f}s)", flush=True)
+    print(f"    create response: status={created['status']} ({api_sec:.2f}s)", flush=True)
 
     status, transitions = wait_until_ready(client, created["agentRuntimeId"])
     record = {
@@ -71,10 +71,12 @@ def timed_create(client, name, artifact, platform_version):
         "agentRuntimeId": created["agentRuntimeId"],
         "agentRuntimeArn": created["agentRuntimeArn"],
         "agentRuntimeVersion": created["agentRuntimeVersion"],
-        # create のレスポンスに platformVersion は含まれない。値の確認は get_agent_runtime で行う。
+        # The create response does not carry platformVersion. Confirm the value with
+        # get_agent_runtime.
         "platform_version_in_create_response": "platformVersion" in created,
         "create_response_raw": jsonable(created),
         "create_api_call_sec": round(api_sec, 2),
+        "environment_variables": sorted(ENV_VARS),
         "final_status": status,
         "total_sec": round(time.monotonic() - t0, 1),
         "transitions": transitions,
@@ -95,7 +97,7 @@ def main():
     require_env(
         "AGENTCORE_ROLE_ARN",
         ROLE_ARN,
-        "AgentCore Runtime の実行ロール ARN を設定する。",
+        "Set the execution role ARN for AgentCore Runtime.",
     )
 
     name = f"{NAME_PREFIX}{suffix}"
@@ -107,7 +109,7 @@ def main():
         flush=True,
     )
     if platform_version == "V2":
-        print("    V2 はスナップショット準備のため READY まで数分かかる。", flush=True)
+        print("    V2 takes minutes to reach READY because the snapshot is prepared.", flush=True)
 
     record = timed_create(client, name, artifact, platform_version)
     if record.get("ok"):
@@ -118,14 +120,14 @@ def main():
             flush=True,
         )
     else:
-        # タイムアウト経路では error_type が無く、final_status に TIMEOUT(last=...) が入る。
-        # どちらの経路でも原因が画面に出るようにする。
+        # The timeout path carries no error_type; final_status holds TIMEOUT(last=...).
+        # Print the cause on either path.
         reason = record.get("error_type") or record.get("final_status")
-        print(f"[{name}] 失敗: {reason} {record.get('message', '')}", flush=True)
+        print(f"[{name}] failed: {reason} {record.get('message', '')}", flush=True)
         if str(reason).startswith("TIMEOUT"):
             print(
-                "    AGENTCORE_WAIT_TIMEOUT_SEC を延ばして再確認する。"
-                " V2 の作成はスナップショット準備のため数分かかる。",
+                "    Raise AGENTCORE_WAIT_TIMEOUT_SEC and check again."
+                " A V2 create takes minutes because the snapshot is prepared.",
                 flush=True,
             )
 

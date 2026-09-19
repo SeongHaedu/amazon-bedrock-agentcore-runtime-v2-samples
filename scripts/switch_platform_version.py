@@ -1,9 +1,10 @@
 # switch_platform_version.py
-# 既存のランタイムを update_agent_runtime で V1 と V2 の間で切り替え、READY までを計測する。
+# Move an existing runtime between V1 and V2 with update_agent_runtime and time READY.
 #
-# V1 -> V2 はスナップショット準備のため分単位かかる。V2 -> V1 は準備が不要なため数秒で終わる。
-# platformVersion を省略した更新でも、既存が V2 であれば V2 が維持され、スナップショット準備も
-# 実行される。つまりアーティファクト差し替えのような通常の更新も V2 では分単位の時間がかかる。
+# V1 -> V2 takes minutes because the snapshot is prepared. V2 -> V1 completes in seconds; no
+# preparation is needed. Omitting platformVersion on a runtime that is already V2 keeps it on
+# V2 and still prepares a snapshot, so ordinary updates such as swapping the artifact also
+# take minutes on V2.
 #
 # usage:
 #   python scripts/switch_platform_version.py <agentRuntimeId> <V1|V2|omit>
@@ -29,15 +30,15 @@ def main():
 
     client = make_client("bedrock-agentcore-control")
 
-    # update_agent_runtime は roleArn と agentRuntimeArtifact が必須である。現行値を get で
-    # 取得して引き継ぐ。environmentVariables も明示的に引き継ぐのは、省略した場合に既存の
-    # 環境変数がクリアされるかどうかがドキュメントに明記されておらず、意図しない消失を
-    # 避けるためである。
+    # update_agent_runtime requires roleArn and agentRuntimeArtifact, so read the current
+    # values with get and pass them through. environmentVariables is carried forward
+    # explicitly because the documentation does not state whether omitting it clears the
+    # existing values, and losing them silently would change the conditions.
     current = client.get_agent_runtime(agentRuntimeId=runtime_id)
     if current["status"] not in ("READY",) and not current["status"].endswith("FAILED"):
         raise SystemExit(
-            f"対象が終端状態ではない (status={current['status']})。"
-            " CREATING / UPDATING / DELETING の間に update を呼ぶと ConflictException が返る。"
+            f"Target is not in a terminal state (status={current['status']})."
+            " Calling update during CREATING / UPDATING / DELETING returns ConflictException."
         )
 
     kwargs = dict(
@@ -63,7 +64,7 @@ def main():
         updated = client.update_agent_runtime(**kwargs)
     except ParamValidationError as error:
         record.update(result="param_validation_error", error=str(error))
-        print(f"送信前に botocore が拒否した: {error}", flush=True)
+        print(f"botocore rejected the request before sending it: {error}", flush=True)
     except ClientError as error:
         record.update(
             result="client_error",
@@ -75,7 +76,7 @@ def main():
     else:
         record["api_latency_sec"] = round(time.monotonic() - t0, 2)
         record["status_immediate"] = updated["status"]
-        # update のレスポンスにも platformVersion は含まれない。
+        # The update response does not carry platformVersion either.
         record["platform_version_in_update_response"] = "platformVersion" in updated
         record["update_response_raw"] = jsonable(updated)
         print(f"status: {updated['status']} (api {record['api_latency_sec']}s)", flush=True)

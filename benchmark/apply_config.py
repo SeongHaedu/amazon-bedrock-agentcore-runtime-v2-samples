@@ -1,27 +1,33 @@
-"""既存ランタイムに artifact / environmentVariables / platformVersion を一度の
-update_agent_runtime でまとめて適用し、READY までを計時する。
+"""Apply artifact, environment variables and platformVersion to an existing runtime in a
+single update_agent_runtime call, timing the transition to READY.
 
-4 系列 (CodeZip / Container × V1 / V2) を同一アーティファクトで測るには、同じランタイム ID の
-platformVersion を切り替えるのが最も条件が揃います。artifact と環境変数と platformVersion を
-別々の update で変えると、その間にランタイムのバージョンが増えて条件が動くため、1 回の update
-でまとめて適用します。
+Measuring four series (CodeZip / Container x V1 / V2) against the same artifact is easiest
+when the same runtime id is switched between platform versions. Changing the artifact, the
+environment variables and platformVersion in separate updates bumps the runtime version in
+between and moves the conditions, so all three are applied in one update.
 
 usage:
   python benchmark/apply_config.py <agentRuntimeId> <artifact> <V1|V2|omit> <global_init_secs|none> <label>
 
-  <artifact>          codeConfiguration なら S3 prefix、containerConfiguration なら container URI。
-                      現状のまま使う場合は keep を渡す。
-  <global_init_secs>  agent-bench の GLOBAL_INIT_SECS に設定する秒数。none ならキー自体を外す。
-  <label>             results/apply_timings.json に記録するラベル。
+  <artifact>          S3 prefix for codeConfiguration, container URI for
+                      containerConfiguration. Pass keep to leave it as it is.
+  <global_init_secs>  Value for GLOBAL_INIT_SECS on agent-bench. none removes the key.
+  <label>             Label recorded in results/apply_timings.json.
+
+Environment variables read here, on top of what the runtime already carries:
+  BEDROCK_MODEL_ID     Forwarded under the same name. Regions without a us.-prefixed
+                       cross-Region inference profile need a Region-local profile.
+  AGENTCORE_ENV_EXTRA  "KEY=VALUE,KEY2=VALUE2" for anything else the agent reads.
 """
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from common import RESULTS_DIR, TIMEOUT_SEC, make_client  # noqa: E402
+from common import RESULTS_DIR, TIMEOUT_SEC, make_client, parse_env_extra  # noqa: E402
 
 USAGE = (
     "usage: python benchmark/apply_config.py <agentRuntimeId> <artifact|keep> "
@@ -39,7 +45,7 @@ def main():
     client = make_client("bedrock-agentcore-control")
     current = client.get_agent_runtime(agentRuntimeId=runtime_id)
 
-    # 現行のアーティファクト定義を深くコピーしてから該当フィールドだけ差し替える。
+    # Deep-copy the current artifact definition and replace only the relevant field.
     artifact = json.loads(json.dumps(current["agentRuntimeArtifact"]))
     if "codeConfiguration" in artifact:
         old_artifact = artifact["codeConfiguration"]["code"]["s3"]["prefix"]
@@ -51,9 +57,16 @@ def main():
             artifact["containerConfiguration"]["containerUri"] = new_artifact
 
     env = dict(current.get("environmentVariables", {}))
+    # Carry the current values forward, then layer the caller's settings on top. This is the
+    # path for setting BEDROCK_MODEL_ID after the runtime was created.
+    env.update(parse_env_extra(os.environ.get("AGENTCORE_ENV_EXTRA")))
+    model_id = os.environ.get("BEDROCK_MODEL_ID")
+    if model_id:
+        env["BEDROCK_MODEL_ID"] = model_id
     if global_init_secs == "none":
-        # キーを残したまま 0 にするのではなく外す。エージェント側の既定値 (0) が使われる状態に
-        # 戻し、「前の条件が残っていないか」を get_agent_runtime で判別できるようにするためである。
+        # Remove the key rather than setting it to 0. That restores the agent's own default
+        # and makes it possible to tell from get_agent_runtime whether a previous condition
+        # is still in place.
         env.pop("GLOBAL_INIT_SECS", None)
     else:
         env["GLOBAL_INIT_SECS"] = str(global_init_secs)
@@ -63,7 +76,8 @@ def main():
         f"  artifact: {old_artifact}\n"
         f"         -> {new_artifact}\n"
         f"  platformVersion: {current.get('platformVersion')} -> {platform_version}\n"
-        f"  GLOBAL_INIT_SECS: {global_init_secs}",
+        f"  GLOBAL_INIT_SECS: {global_init_secs}\n"
+        f"  environmentVariables: {sorted(env)}",
         flush=True,
     )
 
@@ -114,6 +128,7 @@ def main():
             "requested_platform_version": platform_version,
             "platform_version_after": after.get("platformVersion"),
             "global_init_secs": global_init_secs,
+            "environment_variables": sorted(env),
             "final_status": status,
             "ready_elapsed_sec": elapsed,
             "ready_at_epoch": time.time(),

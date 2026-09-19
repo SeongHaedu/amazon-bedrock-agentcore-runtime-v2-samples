@@ -1,11 +1,13 @@
 # probe_globalinit.py
-# agent-globalinit-probe を対象に、複数セッションを同時に発行してグローバル初期化の所在を観測する。
+# Fire several sessions at agent-globalinit-probe at once to see where global initialization
+# actually runs.
 #
-# 逐次実行では V1 のウォームプールに空きがあり、グローバル初期化がプール側 (リクエスト経路の外)
-# で消費されてしまう。同時発行でプールを枯渇させると、V1 ではグローバル初期化がリクエスト経路に
-# 現れる。V2 ではプールの状態に関係なく常に経路の外である。
+# Sequential invokes let V1 serve from its pre-warmed instances, where global initialization
+# was already spent off the request path. Enough concurrent sessions exhaust that pool, and
+# then V1 shows the initialization on the request path. V2 keeps it off the path regardless
+# of the pool.
 #
-# V1 のコンテナデプロイがエンドポイント単位で pre-warmed instance を保持することの出典:
+# Source for the pre-warmed instances that V1 container deployments keep per endpoint:
 # https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA
 #
 # usage:
@@ -41,7 +43,7 @@ def main():
     )
 
     session = boto3.Session(profile_name=PROFILE) if PROFILE else boto3.Session()
-    # クライアントはスレッドごとに分ける。同一クライアントの共有による直列化を避けるためである。
+    # One client per thread. Sharing a single client would serialize the requests.
     clients = [
         session.client(
             "bedrock-agentcore",
@@ -66,9 +68,9 @@ def main():
             try:
                 body = json.loads(text)
             except json.JSONDecodeError:
-                # entrypoint がジェネレータを返す実装では SSE になり JSON として読めない。
-                # その場合も計測を失わないよう生テキストを残す。後段の集計は baked を
-                # 欠く body を許容する。
+                # An entrypoint that returns a generator responds with SSE, which is not
+                # readable as JSON. Keep the raw text so the measurement is not lost; the
+                # aggregation below tolerates a body without baked.
                 body = {"raw": text[:500]}
             return {"i": index, "ok": True, "latency_ms": round((time.monotonic() - t0) * 1000, 1), "body": body}
         except Exception as exc:  # noqa: BLE001
@@ -82,7 +84,7 @@ def main():
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         results = list(pool.map(invoke_once, range(concurrency)))
 
-    # 集計より先に保存する。集計で落ちても計測結果を失わないためである。
+    # Save before aggregating so that a failure in the aggregation does not lose the run.
     save_result(f"probe_globalinit_{target.split('/')[-1]}.json", results)
 
     ok = [r for r in results if r["ok"]]
@@ -94,20 +96,21 @@ def main():
         if not r["ok"]:
             print(f"    error i={r['i']}: {r['error']}", flush=True)
 
-    # baked は agent-globalinit-probe だけが返す。agent-basic を対象に実行した場合は
-    # このキーが無いため、集計をスキップして対象の取り違えを知らせる。
+    # baked is returned only by agent-globalinit-probe. Running this against agent-basic
+    # leaves the key absent, so skip the aggregation and say which target it expects.
     with_baked = [r for r in ok if isinstance(r["body"], dict) and r["body"].get("baked")]
     if not with_baked:
         if ok:
             print(
-                "\nレスポンスに baked が無い。このスクリプトは agent-globalinit-probe の"
-                " ランタイムを対象にする。agent-basic の場合は invoke_runtime.py を使う。",
+                "\nNo baked in the responses. This script targets an agent-globalinit-probe"
+                " runtime. For agent-basic, use invoke_runtime.py.",
                 flush=True,
             )
         return
 
-    # distinct が 1 なら全セッションが同一のスナップショットから復元されている (V2)。
-    # concurrency と同数なら各セッションが自分でグローバル初期化を実行している (V1)。
+    # A handful of distinct values means the sessions were restored from that many snapshots
+    # (V2). As many distinct values as the concurrency means each session ran global
+    # initialization itself (V1).
     uuids = {r["body"]["baked"].get("uuid") for r in with_baked}
     print(f"distinct baked uuid = {len(uuids)} / {len(with_baked)}", flush=True)
     for r in sorted(with_baked, key=lambda r: r["latency_ms"]):

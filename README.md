@@ -6,7 +6,7 @@ Sample code for trying out platform version V2 of Amazon Bedrock AgentCore Runti
 
 These scripts let you create a V2 runtime, migrate an existing V1 runtime to V2, confirm the platform version, invoke the runtime, and observe how V2 changes where your startup code runs.
 
-Blog post (Japanese): TBD
+Blog post (Japanese): https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-platform-version
 
 ## Structure
 
@@ -33,7 +33,9 @@ Blog post (Japanese): TBD
 │   ├── build_breakdown.py       Join client records with [ENTRYPOINT_REACHED] from CloudWatch Logs.
 │   ├── plot_preentry.py         Render the pre-entrypoint distribution chart.
 │   └── requirements.txt         matplotlib / numpy / scipy
+├── images/                      Figures used in this README
 ├── requirements.txt             boto3>=1.43.95
+├── build/                       Working directory for the ZIP builder (gitignored)
 └── results/                     JSON output from every script (gitignored)
 ```
 
@@ -82,9 +84,13 @@ export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py d
 export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # runtime for direct code deployment
 export AGENTCORE_ENTRY_POINT=main.py                     # comma-separated for more than one element
 export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # how long to poll for a terminal status
+export BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-6   # passed to the agent under the same name; agent-bench reads it
+export AGENTCORE_ENV_EXTRA=KEY=VALUE,KEY2=VALUE2         # any other environment variable the agent should receive
 ```
 
 `entryPoint` is an array. Pass a comma-separated value when you need more than one element, for example `AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"`.
+
+Every runtime is created with `PYTHONUNBUFFERED=1`. `BEDROCK_MODEL_ID` and `AGENTCORE_ENV_EXTRA` are layered on top of it, by `scripts/create_runtime.py` at create time and by `benchmark/apply_config.py` on an existing runtime. A value containing a comma cannot be passed through `AGENTCORE_ENV_EXTRA`.
 
 `agent-globalinit-probe` reads two more variables. Its Dockerfile sets both to 10 seconds.
 
@@ -124,6 +130,8 @@ python scripts/setup_codezip_artifact.py agent-basic
 ```
 
 This vendors dependencies for `manylinux2014_aarch64`, zips them together with `main.py`, and uploads the archive to `s3://$AGENTCORE_S3_BUCKET/$AGENTCORE_S3_PREFIX`.
+
+The upload target is that one prefix. Running the script for a second agent overwrites the archive, and every runtime pointing at the prefix then serves the new agent. Give each agent its own `AGENTCORE_S3_PREFIX` when you want them to coexist — Step 8 builds a ZIP from `agent-bench`.
 
 ## Step 3: Create a V2 runtime
 
@@ -181,7 +189,7 @@ The arguments are the number of sessions and the number of invokes per session. 
 
 `agent-basic` returns a `snapshot_identity` object built at module scope. Watch the `distinct identity uuid` line the script prints at the end:
 
-- On V2 it is 1, however many sessions you created. Every instance was restored from the same snapshot.
+- On V2 it collapses. Three sessions against a container runtime reported 1: every instance was restored from the same snapshot. A burst large enough to exhaust one prepared snapshot can report more than 1 — Step 7 saw 2 across 20 concurrent sessions.
 - On V1 it matches the number of new execution environments. Each one ran module scope itself.
 
 ## Step 7: See where your startup work runs
@@ -205,11 +213,24 @@ On V2, the 10 seconds of global initialization does not appear in any invoke. It
 
 Do the same against a V1 runtime built from the same image and send enough concurrent sessions to exhaust the pre-warmed instances that V1 container deployments keep per endpoint (see [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA)). There the global initialization does show up on the request path.
 
+What 20 concurrent sessions against `ap-northeast-1` looked like:
+
+| | latency | distinct `baked` uuid |
+|---|---|---|
+| V2 | 13.6 - 14.2 s, one cluster | 2 / 20 |
+| V1 | 12.3 s x 10, 27.6 s x 10 | 20 / 20 |
+
+Every V2 invoke carries the 10 s of lazy initialization and none of the global initialization. The V1 requests split: the ten that hit a pre-warmed instance paid only lazy initialization, and the ten that did not paid both. The V2 run reported 2 distinct snapshots rather than 1, so treat "one snapshot per runtime version" as the shape of the result, not a guarantee.
+
 Note what else the probe reports. `baked.wall_clock` is the time at which module scope ran, so on V2 the gap between it and `now` grows as the snapshot ages. That is the concrete reason not to hold timestamps, credentials, random seeds, or established connections at module scope on V2. See [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html).
 
 ## Step 8: Measure cold start yourself
 
 This reproduces the distribution chart: four series (CodeZip / Container × V1 / V2), 100 new sessions each. It creates real runtimes, invokes them, and reads CloudWatch Logs.
+
+![AgentCore Runtime cold start: platformVersion V1 vs V2, pre-entrypoint distribution](./images/coldstart_distribution_v1_v2_apne1_preentry_open.png)
+
+Both V2 series sit on one narrow peak around 2 s regardless of deployment mode, while Container V1 spreads out to 7 - 8 s. Only `platformVersion` differs between the series; the artifact, Region, role and environment variables are identical.
 
 ```bash
 pip install -r benchmark/requirements.txt
@@ -218,6 +239,14 @@ pip install -r benchmark/requirements.txt
 ### Build the benchmark agent and create one runtime per deployment mode
 
 `agent-bench` calls Bedrock through Strands and streams the response. It prints `[MODULE_START]`, `[MODULE_END]`, `[ENTRYPOINT_REACHED]` and `[FIRST_TOKEN]`, which is what makes the breakdown possible.
+
+It defaults to `us.anthropic.claude-sonnet-4-6`. A Region with no cross-Region inference profile carrying the `us.` prefix rejects that identifier, and every invoke fails with `ValidationException: The provided model identifier is invalid.` Export a Region-local profile before creating the runtimes:
+
+```bash
+export BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-6   # ap-northeast-1
+```
+
+`scripts/create_runtime.py` passes it through at create time, and `benchmark/apply_config.py` applies it to a runtime that already exists — export it and run any `apply_config.py` invocation.
 
 ```bash
 export BENCH_IMAGE=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:bench
@@ -240,8 +269,6 @@ ARN_CT=<container runtime arn>
 ARN_CZ=<codezip runtime arn>
 ```
 
-If your Region has no cross-Region inference profile with the `us.` prefix (`ap-northeast-1`, for example), pass a Region-local profile when you create the runtimes: add `BEDROCK_MODEL_ID` to the environment variables, or set it later with `benchmark/apply_config.py`.
-
 ### Measure V2, then switch back to V1 and measure again
 
 ```bash
@@ -259,7 +286,7 @@ python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V1 n
 python benchmark/tps_bench_open.py $ARN_CT container_v1_open 5 20
 ```
 
-Check the `実効 TPS` line each run. If it is far below the target, the load generator is being throttled by something on your side and the V1 numbers will look better than they are — see the note in `benchmark/tps_bench_open.py`.
+Check the `effective TPS` line each run. If it is far below the target, the load generator is being throttled by something on your side and the V1 numbers will look better than they are — see the note in `benchmark/tps_bench_open.py`.
 
 Switching to V2 takes minutes because the snapshot is prepared; switching back to V1 takes seconds.
 

@@ -1,16 +1,18 @@
-"""開ループで新規セッションを投入し、リクエストごとのレイテンシーを記録する。
+"""Dispatch new sessions in an open loop and record the latency of every request.
 
-閉ループにしてはいけません。`ThreadPoolExecutor(max_workers=TPS)` にすると同時に走る
-リクエストが TPS 件に制限され、1 リクエストの所要時間が 1 秒を超えた時点で次の投入が
-待たされます。結果として実効レートが目標を下回ります。
+Do not make this a closed loop. `ThreadPoolExecutor(max_workers=TPS)` caps the number of
+requests in flight at TPS, so as soon as one request takes longer than a second the next
+dispatch is held back and the effective rate falls below the target.
 
-これは V1 の測定結果を大きく変えます。投入が引き延ばされるとその間に pre-warmed instance の
-補充が進むため、Container V1 のウォーム命中が実態より多く出ます。手元の検証では、閉ループで
-実効 1.0 〜 1.35 TPS しか出ておらず、100 件中 60 件がウォーム命中でした。開ループに直して
-実効 5.26 TPS を達成すると 20 件に下がりました。
+That changes the V1 numbers substantially. Stretching the dispatch out gives the pre-warmed
+instances time to be replenished, so Container V1 shows more warm hits than it really has.
+In our own runs a closed loop achieved only 1.0 - 1.35 effective TPS and 60 of 100 requests
+hit a warm instance; switching to an open loop reached 5.26 effective TPS and that dropped
+to 20.
 
-max_workers を TPS × 継続秒数 にし、投入ペースは毎秒 TPS 件のまま、完了を待たずに投入します。
-実効 TPS と dispatch span を必ず出力するので、目標どおり出ているかを毎回確認してください。
+max_workers is TPS x duration. Requests are dispatched at TPS per second without waiting for
+completions. The effective TPS and the dispatch span are always printed; check them against
+the target on every run.
 
 usage:
   python benchmark/tps_bench_open.py <agentRuntimeArn> <label> [tps] [duration_sec]
@@ -41,8 +43,8 @@ TPS = int(sys.argv[3]) if len(sys.argv) > 3 else 5
 DURATION_SEC = int(sys.argv[4]) if len(sys.argv) > 4 else 20
 
 MAX_WORKERS = TPS * DURATION_SEC
-# クライアントを分けて同時接続を分散する。botocore の max_pool_connections は既定 10 であり、
-# 100 並行では接続待ちがレイテンシーに混入する。
+# Spread the connections over several clients. botocore's max_pool_connections defaults to 10,
+# and at 100 concurrent requests the wait for a connection leaks into the latency.
 N_CLIENTS = 20
 
 session = boto3.Session(profile_name=PROFILE) if PROFILE else boto3.Session()
@@ -51,10 +53,10 @@ clients = [
         "bedrock-agentcore",
         region_name=REGION,
         config=Config(
-            # 自動リトライは計測に混入するため無効化する。
+            # Automatic retries would leak into the measurement.
             retries={"max_attempts": 0},
             connect_timeout=5,
-            # V1 のコールドスタートでは end-to-end が数十秒に達する場合がある。
+            # A V1 cold start can push end-to-end into the tens of seconds.
             read_timeout=180,
             max_pool_connections=MAX_WORKERS // N_CLIENTS + 5,
         ),
@@ -64,8 +66,8 @@ clients = [
 
 
 def invoke_once(client, sec: int, idx: int) -> dict:
-    # runtimeSessionId は 33 文字以上必要である。全リクエストで新規のセッション ID を発行し、
-    # セッション再利用が起きないようにする。
+    # runtimeSessionId must be at least 33 characters. Every request gets a fresh session id
+    # so that no session is ever reused.
     session_id = f"coldstart-{sec:03d}-{idx:02d}-{uuid.uuid4().hex}"
     dispatched_at = time.time()
     t0 = time.monotonic()
@@ -78,8 +80,9 @@ def invoke_once(client, sec: int, idx: int) -> dict:
             payload=json.dumps({"prompt": "Say OK."}).encode(),
         )
         stream = resp["response"]
-        # iter_lines() を使ってはいけない。内部バッファに読み溜めるため、最初の行が返る時刻が
-        # 読み切り時刻と一致してしまい TTFT が測れない。生バイトの read で分ける。
+        # Do not use iter_lines(). It buffers internally, which makes the time the first line
+        # returns equal the time the whole body was read and destroys the TTFT measurement.
+        # Read raw bytes and split the two apart.
         first = stream.read(1)
         ttft_ms = (time.monotonic() - t0) * 1000
         body = [first]
@@ -128,7 +131,7 @@ def run():
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = []
         for sec in range(DURATION_SEC):
-            # 毎秒 TPS 件を投入する。完了は待たない。
+            # Dispatch TPS requests every second without waiting for completions.
             batch_start = t_start + sec
             now = time.monotonic()
             if batch_start > now:
@@ -147,11 +150,12 @@ def run():
               for s in ("ok", "throttled", "error", "agent_error")}
     span = max(r["dispatched_at"] for r in results) - min(r["dispatched_at"] for r in results)
     print(f"[{LABEL}] total={len(results)} " + " ".join(f"{k}={v}" for k, v in counts.items()))
-    # 実効 TPS が目標に達しているかを必ず確認する。下回っていれば閉ループと同じ問題が起きている。
-    print(f"[{LABEL}] dispatch span={span:.1f}s 実効 TPS={len(results)/span:.2f} "
-          f"(目標 {TPS} TPS x {DURATION_SEC}s)")
+    # Always confirm the effective TPS reached the target. Below it, the same problem as a
+    # closed loop is happening.
+    print(f"[{LABEL}] dispatch span={span:.1f}s effective TPS={len(results)/span:.2f} "
+          f"(target {TPS} TPS x {DURATION_SEC}s)")
     if not ok:
-        print("有効なレスポンスが 0 件だった")
+        print("no valid response was returned")
         return
     print(summary("ttft", [r["ttft_ms"] for r in ok]))
     print(summary("lastbyte", [r["latency_ms"] for r in ok]))

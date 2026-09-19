@@ -1,12 +1,12 @@
 # get_runtime.py
-# ランタイムの platformVersion を確認する。
+# Report the platformVersion of a runtime.
 #
-# list_agent_runtimes のレスポンスには platformVersion が含まれないため、値を見るには
-# get_agent_runtime を個別に呼ぶ必要がある。
+# list_agent_runtimes does not return platformVersion, so reading the value means calling
+# get_agent_runtime per runtime.
 #
 # usage:
-#   python scripts/get_runtime.py                      # プレフィックス一致のランタイムを全件
-#   python scripts/get_runtime.py <agentRuntimeId> ...  # 指定した ID のみ
+#   python scripts/get_runtime.py                       # every runtime matching the prefix
+#   python scripts/get_runtime.py <agentRuntimeId> ...  # only the ids given
 import sys
 from pathlib import Path
 
@@ -24,15 +24,15 @@ def main():
         targets = [(r["agentRuntimeName"], r["agentRuntimeId"]) for r in list_sample_runtimes(client)]
 
     if not targets:
-        print("対象のランタイムが見つからなかった。", flush=True)
+        print("No matching runtime found.", flush=True)
         return
 
     results = {}
     for label, runtime_id in targets:
         info = describe_platform_version(client, runtime_id)
         results[label] = {"agent_runtime_id": runtime_id, **info}
-        # platformVersion を一度も明示指定していないランタイムではキー自体が返らない場合がある。
-        # 判定コードは resp.get("platformVersion", "V1") の形で書く。
+        # The key itself can be absent on a runtime that never had platformVersion set
+        # explicitly. Write your own checks as resp.get("platformVersion", "V1").
         print(
             f"[{label}] status={info['status']} "
             f"platformVersion={info['platform_version']!r} (key present: {info['key_present']}) "

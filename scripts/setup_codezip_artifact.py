@@ -1,9 +1,9 @@
 # setup_codezip_artifact.py
-# 直接コードデプロイ (codezip) 用の zip を作り、S3 にアップロードする。
-# Docker を使わずに V2 を試したい場合はこちらを使う。
+# Build the ZIP for direct code deployment (codezip) and upload it to S3. Use this to try V2
+# without Docker.
 #
-# 依存関係は ARM64 (aarch64) 向けにベンダリングする必要がある。AgentCore Runtime の実行環境は
-# arm64 の Linux であり、ローカルが x86_64 や macOS でもホスト向けの wheel では動かないためである。
+# Dependencies must be vendored for ARM64 (aarch64): AgentCore Runtime executes on arm64
+# Linux, so host wheels built for x86_64 or macOS will not run there.
 #
 # usage:
 #   python scripts/setup_codezip_artifact.py <agent-dir>
@@ -24,11 +24,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 BUILD_DIR = REPO_ROOT / "build" / "codezip"
 ZIP_PATH = REPO_ROOT / "build" / "agent-codezip.zip"
 
-# AgentCore Runtime の実行環境に合わせる。CODE_RUNTIME が PYTHON_3_11 なので 3.11 を指定する。
+# Match the AgentCore Runtime execution environment. CODE_RUNTIME is PYTHON_3_11, so 3.11.
 PLATFORM = "manylinux2014_aarch64"
 PYTHON_VERSION = "3.11"
-# 依存は対象ディレクトリの requirements.txt から読む。Dockerfile も同じファイルを参照するため、
-# コンテナと ZIP で依存がずれない。ファイルが無い場合のフォールバックだけここで持つ。
+# Dependencies come from the target directory's requirements.txt, the same file the
+# Dockerfile reads, so the container and the ZIP cannot drift apart. The fallback below only
+# covers a directory without that file.
 FALLBACK_DEPENDENCIES = ["bedrock-agentcore"]
 
 USAGE = "usage: python scripts/setup_codezip_artifact.py <agent-dir>"
@@ -37,7 +38,7 @@ USAGE = "usage: python scripts/setup_codezip_artifact.py <agent-dir>"
 def resolve_dependencies(agent_dir):
     req = agent_dir / "requirements.txt"
     if not req.exists():
-        print(f"{req} が無いため既定の依存を使う: {FALLBACK_DEPENDENCIES}", flush=True)
+        print(f"{req} is missing; using the default dependencies: {FALLBACK_DEPENDENCIES}", flush=True)
         return FALLBACK_DEPENDENCIES
     deps = [
         line.strip()
@@ -45,7 +46,7 @@ def resolve_dependencies(agent_dir):
         if line.strip() and not line.lstrip().startswith("#")
     ]
     if not deps:
-        raise SystemExit(f"{req} に依存が 1 件も書かれていない。")
+        raise SystemExit(f"{req} lists no dependencies.")
     return deps
 
 
@@ -54,13 +55,13 @@ def vendor_dependencies(dependencies):
         shutil.rmtree(BUILD_DIR)
     BUILD_DIR.mkdir(parents=True)
 
-    # --only-binary=:all: を付けるのは、ソース配布からのビルドがローカルのアーキテクチャ向けに
-    # なってしまうのを防ぐためである。wheel が無い依存があればここで失敗し、気付ける。
+    # --only-binary=:all: keeps a source distribution from being built for the local
+    # architecture. A dependency without a wheel fails here, where it is visible.
     #
-    # --no-compile を付けるのは、ローカルでコンパイルしたバイトコードを作らせないためである。
-    # 開発機と実行環境でアーキテクチャや OS が異なると互換性が無い。公開ドキュメントも
-    # __pycache__ をデプロイパッケージに含めないことを推奨している。
-    # 念のため build_zip() 側でも除外する。
+    # --no-compile keeps locally compiled bytecode out of the archive: it is incompatible
+    # when the development machine differs from the execution environment in architecture or
+    # OS. The public documentation also recommends excluding __pycache__ from the deployment
+    # package. build_zip() filters it again for good measure.
     command = [
         sys.executable,
         "-m",
@@ -83,7 +84,7 @@ def vendor_dependencies(dependencies):
 def build_zip(agent_dir):
     entry = agent_dir / "main.py"
     if not entry.exists():
-        raise SystemExit(f"{entry} が存在しない。{USAGE}")
+        raise SystemExit(f"{entry} does not exist. {USAGE}")
     shutil.copy2(entry, BUILD_DIR / "main.py")
 
     if ZIP_PATH.exists():
@@ -92,13 +93,13 @@ def build_zip(agent_dir):
         for path in sorted(BUILD_DIR.rglob("*")):
             if not path.is_file():
                 continue
-            # __pycache__ と .pyc は除外する。pip install --target がローカルの
-            # Python でコンパイルしたバイトコードであり、実行環境と Python の
-            # バージョンやアーキテクチャが異なると使えない。zip も無駄に膨らむ。
+            # Exclude __pycache__ and .pyc: pip install --target compiles them with the local
+            # Python, and they are unusable when the execution environment differs in Python
+            # version or architecture. They also inflate the archive.
             if "__pycache__" in path.parts or path.suffix == ".pyc":
                 continue
-            # zip のルート直下に main.py と依存が並ぶ形にする。entryPoint は
-            # ["main.py"] であり、zip 内のパスと一致していなければ起動に失敗する。
+            # main.py and the dependencies sit at the root of the archive. entryPoint is
+            # ["main.py"] and must match the path inside the ZIP or startup fails.
             zf.write(path, path.relative_to(BUILD_DIR))
     return ZIP_PATH.stat().st_size
 
@@ -108,12 +109,12 @@ def main():
         raise SystemExit(USAGE)
     agent_dir = REPO_ROOT / sys.argv[1]
     if not agent_dir.is_dir():
-        raise SystemExit(f"{agent_dir} がディレクトリではない。{USAGE}")
+        raise SystemExit(f"{agent_dir} is not a directory. {USAGE}")
 
     require_env(
         "AGENTCORE_S3_BUCKET",
         S3_BUCKET,
-        "zip のアップロード先に使う既存の S3 バケット名を設定する。",
+        "Set the name of an existing S3 bucket to upload the ZIP to.",
     )
 
     dependencies = resolve_dependencies(agent_dir)

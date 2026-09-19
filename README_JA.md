@@ -6,7 +6,9 @@ Amazon Bedrock AgentCore Runtime のプラットフォームバージョン V2 �
 
 本リポジトリのスクリプトで、V2 ランタイムの作成、既存の V1 ランタイムから V2 への移行、プラットフォームバージョンの確認、呼び出し、そして V2 が起動時のコードの実行タイミングをどう変えるかの観測ができます。
 
-ブログ記事: 公開後にリンクを追加します。
+ブログ記事: https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-platform-version
+
+![platformVersion による起動経路の違い](./images/v1_v2_startup_path.png)
 
 ## ディレクトリ構成
 
@@ -33,7 +35,9 @@ Amazon Bedrock AgentCore Runtime のプラットフォームバージョン V2 �
 │   ├── build_breakdown.py       クライアントの記録と CloudWatch Logs の [ENTRYPOINT_REACHED] を突き合わせる。
 │   ├── plot_preentry.py         pre-entrypoint の分布図を生成する。
 │   └── requirements.txt         matplotlib / numpy / scipy
+├── images/                      本 README で使用する図
 ├── requirements.txt             boto3>=1.43.95
+├── build/                       ZIP 生成の作業ディレクトリ (.gitignore 対象)
 └── results/                     各スクリプトの実行結果 JSON の出力先 (.gitignore 対象)
 ```
 
@@ -82,9 +86,13 @@ export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py �
 export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # 直接コードデプロイのランタイム
 export AGENTCORE_ENTRY_POINT=main.py                     # 複数要素を渡す場合はカンマ区切り
 export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # 終端状態になるまでポーリングする上限
+export BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-6   # 同名でエージェントに渡す。agent-bench が読む。
+export AGENTCORE_ENV_EXTRA=KEY=VALUE,KEY2=VALUE2         # エージェントに渡すその他の環境変数
 ```
 
 `entryPoint` は配列です。複数の要素が必要な場合はカンマ区切りで渡します。例えば `AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"` のように指定します。
+
+ランタイムには常に `PYTHONUNBUFFERED=1` が設定されます。`BEDROCK_MODEL_ID` と `AGENTCORE_ENV_EXTRA` はその上に重ねられます。作成時は `scripts/create_runtime.py` が、既存ランタイムへの適用は `benchmark/apply_config.py` が反映します。カンマを含む値は `AGENTCORE_ENV_EXTRA` では渡せません。
 
 `agent-globalinit-probe` はさらに 2 つの環境変数を読みます。Dockerfile で両方を 10 秒に設定しています。
 
@@ -125,7 +133,11 @@ python scripts/setup_codezip_artifact.py agent-basic
 
 依存関係を `manylinux2014_aarch64` 向けにベンダリングし、`main.py` とともに ZIP にまとめて `s3://$AGENTCORE_S3_BUCKET/$AGENTCORE_S3_PREFIX` にアップロードします。
 
+アップロード先はこの 1 つの prefix です。別のエージェントで再実行するとアーカイブが上書きされ、この prefix を指す全ランタイムが新しいエージェントを配信します。複数のエージェントを共存させる場合は、エージェントごとに `AGENTCORE_S3_PREFIX` を変えてください。手順 8 では `agent-bench` から ZIP を作ります。
+
 ## 手順 3: V2 ランタイムを作成する
+
+![スナップショット作成の DAG (create / update)](./images/v2_snapshot_create_dag.png)
 
 ```bash
 python scripts/create_runtime.py basic_v2 container V2
@@ -173,6 +185,8 @@ update を呼ぶ前に、ランタイムが終端状態 (`READY` または `*_FA
 
 ## 手順 6: 呼び出す
 
+![スナップショット復元の DAG (invoke)](./images/v2_snapshot_restore_dag.png)
+
 ```bash
 python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 3 2
 ```
@@ -181,7 +195,7 @@ python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 3 2
 
 `agent-basic` はモジュールスコープで構築した `snapshot_identity` を返します。スクリプトが最後に表示する `distinct identity uuid` の行に注目してください。
 
-- V2 では、いくつセッションを作っても 1 です。すべてのインスタンスが同一のスナップショットから復元されています。
+- V2 では値がまとまります。コンテナのランタイムに 3 セッションを投げた実測では 1 でした。すべてのインスタンスが同一のスナップショットから復元されています。準備済みのスナップショット 1 つで足りない規模のバーストでは 1 を超えることがあり、手順 7 の 20 並列では 2 になりました。
 - V1 では、新しく起動した実行環境の数と一致します。それぞれが自分でモジュールスコープを実行しています。
 
 ## 手順 7: 起動時の処理がどこで走るかを確認する
@@ -205,11 +219,24 @@ V2 では、グローバル初期化の 10 秒はどの呼び出しにも現れ�
 
 同じイメージから作成した V1 のランタイムに対して同じことを行い、pre-warmed instance を枯渇させるだけの同時セッションを投げてください。その場合はグローバル初期化がリクエストの経路に現れます。V1 のコンテナデプロイがエンドポイント単位で pre-warmed instance を保持することは [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA) に記載があります。
 
+`ap-northeast-1` で 20 セッションを同時に投げた実測値は以下のとおりです。
+
+| | レイテンシー | distinct `baked` uuid |
+|---|---|---|
+| V2 | 13.6 - 14.2 秒の 1 群 | 2 / 20 |
+| V1 | 12.3 秒 x 10 件、27.6 秒 x 10 件 | 20 / 20 |
+
+V2 はすべての呼び出しが遅延初期化の 10 秒だけを負担し、グローバル初期化は負担していません。V1 は 2 群に分かれます。pre-warmed instance に着地した 10 件は遅延初期化のみ、着地しなかった 10 件は両方を負担しています。V2 の distinct が 1 ではなく 2 だったため、「ランタイムのバージョンごとにスナップショットは 1 つ」は結果の傾向として読み、保証として扱わないでください。
+
 プローブが返す他の値にも注目してください。`baked.wall_clock` はモジュールスコープが実行された時刻であるため、V2 ではスナップショットが古くなるにつれて `now` との差が広がります。これが、V2 ではタイムスタンプ・認証情報・乱数シード・確立済みの接続をモジュールスコープで保持してはならない具体的な理由です。詳細は [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html) を参照してください。
 
 ## 手順 8: コールドスタートを自分で測る
 
 記事の分布図を再現する手順です。CodeZip / Container × V1 / V2 の 4 系列について、それぞれ 100 件の新規セッションを投入します。実際のランタイムを作成し、呼び出し、CloudWatch Logs を読みます。
+
+![AgentCore Runtime cold start: platformVersion V1 vs V2 (pre-entrypoint)](./images/coldstart_distribution_v1_v2_apne1_preentry_open.png)
+
+V2 の 2 系列はデプロイ方式に関係なく 2 秒付近の 1 つの狭いピークに収まり、Container V1 は 7 - 8 秒まで広がります。系列間で異なるのは `platformVersion` だけで、アーティファクト・リージョン・ロール・環境変数は同一です。
 
 ```bash
 pip install -r benchmark/requirements.txt
@@ -218,6 +245,14 @@ pip install -r benchmark/requirements.txt
 ### 計測対象をビルドし、デプロイ方式ごとにランタイムを作る
 
 `agent-bench` は Strands 経由で Bedrock を呼び、レスポンスをストリーミングします。`[MODULE_START]`、`[MODULE_END]`、`[ENTRYPOINT_REACHED]`、`[FIRST_TOKEN]` を出力します。この後の内訳分解はこれらのマーカーに依存します。
+
+既定のモデル ID は `us.anthropic.claude-sonnet-4-6` です。`us.` プレフィックスのクロスリージョン推論プロファイルが存在しないリージョンではこの識別子が拒否され、すべての呼び出しが `ValidationException: The provided model identifier is invalid.` で失敗します。ランタイムを作成する前に、リージョン別のプロファイルを設定してください。
+
+```bash
+export BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-6   # ap-northeast-1 の場合
+```
+
+作成時は `scripts/create_runtime.py` が引き渡します。既存のランタイムに設定する場合は、この変数を設定したうえで `benchmark/apply_config.py` を実行してください。update にまとめて反映されます。
 
 ```bash
 export BENCH_IMAGE=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:bench
@@ -240,8 +275,6 @@ ARN_CT=<container のランタイム ARN>
 ARN_CZ=<codezip のランタイム ARN>
 ```
 
-`us.` プレフィックスのクロスリージョン推論プロファイルが存在しないリージョン (`ap-northeast-1` など) では、リージョン別のプロファイルを渡してください。ランタイム作成時に環境変数 `BEDROCK_MODEL_ID` を含めるか、後から `benchmark/apply_config.py` で設定します。
-
 ### V2 で測り、V1 に戻して測る
 
 ```bash
@@ -259,7 +292,7 @@ python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V1 n
 python benchmark/tps_bench_open.py $ARN_CT container_v1_open 5 20
 ```
 
-実行ごとに `実効 TPS` の行を確認してください。目標を大きく下回っている場合、クライアント側の何かが投入を妨げており、V1 の数値が実態より良く出ます。理由は `benchmark/tps_bench_open.py` の冒頭に書いてあります。
+実行ごとに `effective TPS` の行を確認してください。目標を大きく下回っている場合、クライアント側の何かが投入を妨げており、V1 の数値が実態より良く出ます。理由は `benchmark/tps_bench_open.py` の冒頭に書いてあります。
 
 V2 への切り替えはスナップショット準備のため数分かかります。V1 への切り戻しは数秒で終わります。
 
