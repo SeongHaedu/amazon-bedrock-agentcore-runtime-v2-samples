@@ -2,18 +2,26 @@ English | [Japanese](README_JA.md)
 
 # Amazon Bedrock AgentCore Runtime V2: platformVersion Samples
 
-Sample code for trying out platform version V2 of Amazon Bedrock AgentCore Runtime. V2 starts your agent by restoring a snapshot, which keeps cold starts fast and consistent regardless of concurrency or image size. You select it per agent runtime with the `platformVersion` field (`V1` or `V2`); V1 is the default.
+Sample code for trying out platform version V2 of Amazon Bedrock AgentCore Runtime. V2 starts your agent by restoring a snapshot of the environment, so cold starts stay consistent regardless of image size or concurrency. You enable it per agent runtime by setting `platformVersion` to `V2`; the default is `V1`.
 
-These scripts let you create a V2 runtime, migrate an existing V1 runtime to V2, confirm the platform version, invoke the runtime, and observe how V2 changes where your startup code runs.
+Use the scripts in this repository to create a V2 runtime, migrate an existing V1 runtime to V2, confirm the platform version, invoke the runtime, and measure cold start.
 
 Blog post (Japanese): https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-platform-version
+
+![Startup paths by platformVersion](./images/en/v1_v2_startup_path.png)
+
+Deployment modes are abbreviated as follows.
+
+- CodeZip: direct code deployment. You put a ZIP in S3 and it runs in the Python environment that AgentCore manages.
+- Container: container deployment. You put an ARM64 image in ECR.
+
+You specify `platformVersion` the same way for both modes. Only the artifact differs.
 
 ## Structure
 
 ```
 .
 ├── agent-basic/                 Minimal agent. Prints module-scope and handler markers.
-├── agent-globalinit-probe/      Probe agent. Global init vs lazy init, 10 s each.
 ├── agent-bench/                 Benchmark target. Strands + Bedrock, streaming, timing markers.
 │                                Each agent dir holds main.py, Dockerfile and requirements.txt.
 │                                The Dockerfile and the ZIP builder read the same requirements.txt.
@@ -25,7 +33,6 @@ Blog post (Japanese): https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-p
 │   ├── switch_platform_version.py Move an existing runtime between V1 and V2.
 │   ├── get_runtime.py           Read platformVersion via get_agent_runtime.
 │   ├── invoke_runtime.py        Invoke with fresh sessions and compare against session reuse.
-│   ├── probe_globalinit.py      Burst-invoke the probe agent to see where startup work lands.
 │   └── cleanup_runtimes.py      Delete only runtimes matching the name prefix.
 ├── benchmark/
 │   ├── apply_config.py          Apply artifact / env / platformVersion in one update, timing READY.
@@ -33,7 +40,10 @@ Blog post (Japanese): https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-p
 │   ├── build_breakdown.py       Join client records with [ENTRYPOINT_REACHED] from CloudWatch Logs.
 │   ├── plot_preentry.py         Render the pre-entrypoint distribution chart.
 │   └── requirements.txt         matplotlib / numpy / scipy
-├── images/                      Figures used in this README
+├── images/
+│   ├── ja/                      Japanese figures
+│   ├── en/                      English figures
+│   └── commons/                 Language-independent figures
 ├── requirements.txt             boto3>=1.43.95
 ├── build/                       Working directory for the ZIP builder (gitignored)
 └── results/                     JSON output from every script (gitignored)
@@ -41,14 +51,14 @@ Blog post (Japanese): https://zenn.dev/aws_japan/articles/agentcore-runtime-v2-p
 
 ## Prerequisites
 
-- Python 3.10+
-- `boto3>=1.43.95`. This is the first public release that carries the `platformVersion` field. Earlier versions reject the request before sending it, with `ParamValidationError`.
-- An AgentCore Runtime execution role
-- A Region where V2 is available: `us-east-1`, `us-east-2`, `us-west-2`, `eu-west-1`, `ap-northeast-1`
-- For the container path: Docker with `docker buildx` (AgentCore Runtime microVMs run ARM64 Linux) and an ECR repository
-- For the direct code deployment path: an existing S3 bucket
+- Python 3.10 or later.
+- `boto3>=1.43.95`. This is the first public release that carries the `platformVersion` field. Earlier versions reject the request with `ParamValidationError` before it is sent.
+- An AgentCore Runtime execution role.
+- A Region where V2 is available. For the current list, see [microVMs — Supported Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-how-it-works.html#runtime-platform-versions-regions).
+- For Container: Docker with `docker buildx`, and an ECR repository. AgentCore Runtime microVMs run ARM64 Linux.
+- For CodeZip: an existing S3 bucket.
 
-> Note: AWS CloudFormation and the AWS CDK do not currently support setting `platformVersion`. Use the AWS SDK, the CLI, or the console.
+> Note: AWS CloudFormation and the AWS CDK do not currently support setting `platformVersion`. Use the AWS SDK, the AWS CLI, or the console.
 
 ## Setup
 
@@ -61,7 +71,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-All commands below are run from the repository root.
+Run every command below from the repository root.
 
 ## Environment variables
 
@@ -71,17 +81,17 @@ Set `AWS_REGION` explicitly. Without it the scripts fall back to `us-west-2`, wh
 export AWS_REGION=ap-northeast-1
 export AGENTCORE_ROLE_ARN=arn:aws:iam::<account-id>:role/<execution-role>
 
-# Container path
+# Container
 export AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:v2sample
 
-# Direct code deployment path
+# CodeZip
 export AGENTCORE_S3_BUCKET=<bucket-name>
 export AGENTCORE_S3_PREFIX=agentcore/codezip/agent.zip   # optional, this is the default
 
 # Optional
 export AWS_PROFILE=<profile>
 export AGENTCORE_NAME_PREFIX=v2sample_                   # cleanup_runtimes.py deletes only this prefix (4 chars minimum)
-export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # runtime for direct code deployment
+export AGENTCORE_CODE_RUNTIME=PYTHON_3_11                # runtime for CodeZip
 export AGENTCORE_ENTRY_POINT=main.py                     # comma-separated for more than one element
 export AGENTCORE_WAIT_TIMEOUT_SEC=1800                   # how long to poll for a terminal status
 export BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-6   # passed to the agent under the same name; agent-bench reads it
@@ -90,28 +100,19 @@ export AGENTCORE_ENV_EXTRA=KEY=VALUE,KEY2=VALUE2         # any other environment
 
 `entryPoint` is an array. Pass a comma-separated value when you need more than one element, for example `AGENTCORE_ENTRY_POINT="opentelemetry-instrument,main.py"`.
 
-Every runtime is created with `PYTHONUNBUFFERED=1`. `BEDROCK_MODEL_ID` and `AGENTCORE_ENV_EXTRA` are layered on top of it, by `scripts/create_runtime.py` at create time and by `benchmark/apply_config.py` on an existing runtime. A value containing a comma cannot be passed through `AGENTCORE_ENV_EXTRA`.
+Every runtime is created with `PYTHONUNBUFFERED=1`, and `BEDROCK_MODEL_ID` and `AGENTCORE_ENV_EXTRA` are layered on top of it. `scripts/create_runtime.py` applies them at create time and `benchmark/apply_config.py` applies them to an existing runtime. A value containing a comma cannot be passed through `AGENTCORE_ENV_EXTRA`.
 
-`agent-globalinit-probe` reads two more variables. Its Dockerfile sets both to 10 seconds.
-
-```bash
-export GLOBAL_INIT_SECS=10   # sleep at module scope, captured in the snapshot on V2
-export LAZY_INIT_SECS=10     # sleep on the first request of each session
-```
-
-Keep `GLOBAL_INIT_SECS` well below 120. Your container must report healthy within 120 seconds of startup, and this sleep runs before the server starts listening, so a large value makes create or update fail with a health check error.
-
-## Step 1: Check your SDK
+## Step 1: Check the SDK
 
 ```bash
 python scripts/check_sdk_version.py
 ```
 
-This makes no AWS calls. It reads the installed botocore service model and reports whether `platformVersion` is present on `CreateAgentRuntime` / `UpdateAgentRuntime` inputs and the `GetAgentRuntime` output. `platformVersion` is response-only on `GetAgentRuntime`, so its absence from that operation's input is expected.
+This makes no AWS calls. It reads the installed botocore service model and reports whether `platformVersion` is present on the `CreateAgentRuntime` and `UpdateAgentRuntime` inputs and the `GetAgentRuntime` output. `platformVersion` is response-only, so its absence from the `GetAgentRuntime` input is expected.
 
 ## Step 2: Build an artifact
 
-### Option A: container
+### Option A: Container
 
 ```bash
 aws ecr get-login-password --region $AWS_REGION \
@@ -123,7 +124,7 @@ docker buildx build --platform linux/arm64 \
   --push agent-basic/
 ```
 
-### Option B: direct code deployment (no Docker)
+### Option B: CodeZip (no Docker)
 
 ```bash
 python scripts/setup_codezip_artifact.py agent-basic
@@ -131,9 +132,13 @@ python scripts/setup_codezip_artifact.py agent-basic
 
 This vendors dependencies for `manylinux2014_aarch64`, zips them together with `main.py`, and uploads the archive to `s3://$AGENTCORE_S3_BUCKET/$AGENTCORE_S3_PREFIX`.
 
-The upload target is that one prefix. Running the script for a second agent overwrites the archive, and every runtime pointing at the prefix then serves the new agent. Give each agent its own `AGENTCORE_S3_PREFIX` when you want them to coexist — Step 8 builds a ZIP from `agent-bench`.
+The upload target is that one prefix. Running the script for a second agent overwrites the archive, and every runtime pointing at the prefix then serves the new agent. Give each agent its own `AGENTCORE_S3_PREFIX` when you want them to coexist. Step 7 builds a ZIP from `agent-bench`.
 
 ## Step 3: Create a V2 runtime
+
+The snapshot is taken on create and on update. AgentCore Runtime starts your container, waits for `/ping` to report healthy, and then saves the running environment as a snapshot.
+
+![Snapshot creation DAG (create / update)](./images/en/v2_snapshot_create_dag.png)
 
 ```bash
 python scripts/create_runtime.py basic_v2 container V2
@@ -141,9 +146,9 @@ python scripts/create_runtime.py basic_v2 container V2
 
 Replace `container` with `codezip` if you built the ZIP. The third argument is the platform version: `V2`, `V1`, or `omit`.
 
-A V2 create prepares and snapshots your environment, so it takes minutes rather than seconds. The script polls `get_agent_runtime` until the status is `READY` or ends in `FAILED`, and prints each status transition with its elapsed time.
+A V2 create prepares the environment and takes a snapshot, so it takes minutes rather than seconds. The script polls `get_agent_runtime` until the status is `READY` or ends in `FAILED`, and prints each status transition with its elapsed time.
 
-To see the difference for yourself, create a V1 runtime from the same artifact:
+To see the difference for yourself, create a V1 runtime from the same artifact.
 
 ```bash
 python scripts/create_runtime.py basic_v1 container omit
@@ -155,7 +160,7 @@ python scripts/create_runtime.py basic_v1 container omit
 python scripts/get_runtime.py
 ```
 
-`create_agent_runtime` and `update_agent_runtime` do not return `platformVersion`; `get_agent_runtime` does. `list_agent_runtimes` does not return it either, so this script calls `get_agent_runtime` per runtime.
+`platformVersion` appears only in the `get_agent_runtime` response. The `create_agent_runtime`, `update_agent_runtime` and `list_agent_runtimes` responses do not carry it, so this script calls `get_agent_runtime` per runtime.
 
 Write your own checks as `resp.get("platformVersion", "V1")`. V1 is the default.
 
@@ -169,7 +174,7 @@ python scripts/switch_platform_version.py <agentRuntimeId> V2
 
 Two behaviors are worth seeing directly.
 
-- `V2` -> `V1` completes in seconds. No snapshot preparation is needed.
+- `V2` to `V1` completes in seconds. No snapshot preparation is needed.
 - Omitting `platformVersion` on a runtime that is already V2 keeps it on V2 and still prepares a snapshot. Ordinary updates such as swapping the artifact therefore also take minutes on V2.
 
 ```bash
@@ -181,54 +186,26 @@ The runtime must be in a terminal state (`READY` or `*_FAILED`) before you call 
 
 ## Step 6: Invoke
 
+A new microVM is restored from the snapshot. The second and later invokes in the same session skip that path and run the entrypoint directly.
+
+![Snapshot restore DAG (invoke)](./images/en/v2_snapshot_restore_dag.png)
+
 ```bash
 python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 3 2
 ```
 
 The arguments are the number of sessions and the number of invokes per session. Each session uses a fresh `runtimeSessionId`, so every first invoke goes through the startup path. The second invoke in the same session lands on the existing environment, which gives you the floor for a request that includes no startup work.
 
-`agent-basic` returns a `snapshot_identity` object built at module scope. Watch the `distinct identity uuid` line the script prints at the end:
+`agent-basic` returns a `snapshot_identity` object built at module scope. Watch the `distinct identity uuid` line the script prints at the end.
 
-- On V2 it collapses. Three sessions against a container runtime reported 1: every instance was restored from the same snapshot. A burst large enough to exhaust one prepared snapshot can report more than 1 — Step 7 saw 2 across 20 concurrent sessions.
+- On V2 it collapses. Three sessions against a Container runtime reported 1: every instance was restored from the same snapshot. A larger burst can report more than 1, so do not treat 1 as a guarantee.
 - On V1 it matches the number of new execution environments. Each one ran module scope itself.
 
-## Step 7: See where your startup work runs
+## Step 7: Measure cold start yourself
 
-This is the part that changes how you write agent code. `agent-globalinit-probe` sleeps 10 seconds at module scope and another 10 seconds on the first request of each session.
+This reproduces the distribution chart from the blog post: four series (CodeZip / Container × V1 / V2), 100 new sessions each. It creates real runtimes, invokes them, and reads CloudWatch Logs.
 
-```bash
-docker buildx build --platform linux/arm64 \
-  -t <account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:probe \
-  --push agent-globalinit-probe/
-
-AGENTCORE_CONTAINER_URI=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:probe \
-  python scripts/create_runtime.py probe_v2 container V2
-
-python scripts/probe_globalinit.py <agentRuntimeId|agentRuntimeArn> 20
-```
-
-The trailing `20` is the number of sessions to fire concurrently. That is also the default. Send enough of them at once that V1 runs out of pre-warmed instances; otherwise the V1 side hides its global initialization in the pool.
-
-On V2, the 10 seconds of global initialization does not appear in any invoke. It was spent once while the snapshot was prepared. The 10 seconds of lazy initialization appears on the first invoke of every session, because the snapshot cannot carry it.
-
-Do the same against a V1 runtime built from the same image and send enough concurrent sessions to exhaust the pre-warmed instances that V1 container deployments keep per endpoint (see [Minimizing startup latency with Amazon Bedrock AgentCore Runtime](https://repost.aws/articles/ARCJIn3t7aRC2FxiRTV1SuCA)). There the global initialization does show up on the request path.
-
-What 20 concurrent sessions against `ap-northeast-1` looked like:
-
-| | latency | distinct `baked` uuid |
-|---|---|---|
-| V2 | 13.6 - 14.2 s, one cluster | 2 / 20 |
-| V1 | 12.3 s x 10, 27.6 s x 10 | 20 / 20 |
-
-Every V2 invoke carries the 10 s of lazy initialization and none of the global initialization. The V1 requests split: the ten that hit a pre-warmed instance paid only lazy initialization, and the ten that did not paid both. The V2 run reported 2 distinct snapshots rather than 1, so treat "one snapshot per runtime version" as the shape of the result, not a guarantee.
-
-Note what else the probe reports. `baked.wall_clock` is the time at which module scope ran, so on V2 the gap between it and `now` grows as the snapshot ages. That is the concrete reason not to hold timestamps, credentials, random seeds, or established connections at module scope on V2. See [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html).
-
-## Step 8: Measure cold start yourself
-
-This reproduces the distribution chart: four series (CodeZip / Container × V1 / V2), 100 new sessions each. It creates real runtimes, invokes them, and reads CloudWatch Logs.
-
-![AgentCore Runtime cold start: platformVersion V1 vs V2, pre-entrypoint distribution](./images/coldstart_distribution_v1_v2_apne1_preentry_open.png)
+![AgentCore Runtime cold start: platformVersion V1 vs V2, pre-entrypoint distribution](./images/commons/coldstart_distribution_v1_v2_apne1_preentry_open.png)
 
 Both V2 series sit on one narrow peak around 2 s regardless of deployment mode, while Container V1 spreads out to 7 - 8 s. Only `platformVersion` differs between the series; the artifact, Region, role and environment variables are identical.
 
@@ -240,13 +217,13 @@ pip install -r benchmark/requirements.txt
 
 `agent-bench` calls Bedrock through Strands and streams the response. It prints `[MODULE_START]`, `[MODULE_END]`, `[ENTRYPOINT_REACHED]` and `[FIRST_TOKEN]`, which is what makes the breakdown possible.
 
-It defaults to `us.anthropic.claude-sonnet-4-6`. A Region with no cross-Region inference profile carrying the `us.` prefix rejects that identifier, and every invoke fails with `ValidationException: The provided model identifier is invalid.` Export a Region-local profile before creating the runtimes:
+It defaults to `us.anthropic.claude-sonnet-4-6`. A Region with no cross-Region inference profile carrying the `us.` prefix rejects that identifier, and every invoke fails with `ValidationException: The provided model identifier is invalid.` Export a Region-local profile before you create the runtimes.
 
 ```bash
 export BEDROCK_MODEL_ID=jp.anthropic.claude-sonnet-4-6   # ap-northeast-1
 ```
 
-`scripts/create_runtime.py` passes it through at create time, and `benchmark/apply_config.py` applies it to a runtime that already exists — export it and run any `apply_config.py` invocation.
+`scripts/create_runtime.py` passes it through at create time. To set it on a runtime that already exists, export it and run `benchmark/apply_config.py`; the value is applied along with the rest of the update.
 
 ```bash
 export BENCH_IMAGE=<account-id>.dkr.ecr.$AWS_REGION.amazonaws.com/<repository>:bench
@@ -286,7 +263,7 @@ python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V1 n
 python benchmark/tps_bench_open.py $ARN_CT container_v1_open 5 20
 ```
 
-Check the `effective TPS` line each run. If it is far below the target, the load generator is being throttled by something on your side and the V1 numbers will look better than they are — see the note in `benchmark/tps_bench_open.py`.
+Check the `effective TPS` line each run. If it is far below the target, the load generator is being held back by something on your side and the V1 numbers will look better than they are. The reason is documented at the top of `benchmark/tps_bench_open.py`.
 
 Switching to V2 takes minutes because the snapshot is prepared; switching back to V1 takes seconds.
 
@@ -309,7 +286,7 @@ python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V2 2
 python benchmark/tps_bench_open.py $ARN_CT container_v2_gs25 5 20
 ```
 
-Keep the value below 120. The container must report healthy within 120 seconds of startup, and this sleep runs before the server starts listening.
+Keep the value below 120. Your container must report healthy within 120 seconds of startup, and this sleep runs before the server starts listening.
 
 ## Cleanup
 
@@ -318,18 +295,17 @@ python scripts/cleanup_runtimes.py          # list the targets only
 python scripts/cleanup_runtimes.py --yes    # actually delete
 ```
 
-Only runtimes whose name starts with `AGENTCORE_NAME_PREFIX` (default `v2sample_`) are deleted. Without `--yes` the script prints the list and exits.
-
-The script refuses to run if the prefix is shorter than 4 characters. An empty prefix matches every runtime in the account and Region, so this check runs before any AWS call.
+Only runtimes whose name starts with `AGENTCORE_NAME_PREFIX` (default `v2sample_`) are deleted. Without `--yes` the script prints the list and exits. The script refuses to run if the prefix is shorter than 4 characters, before any AWS call, because an empty prefix matches every runtime in the account and Region.
 
 Deletion of the runtime itself takes seconds even on V2. The underlying snapshot can take up to 8 hours to disappear, because sessions already running on it continue until they end. That is the maximum session lifetime.
 
 ## Notes and current limits
 
-- V2 limits the total size of your agent's environment variables to 1.5 KB for direct code deployments and 2.5 KB for container agents, against 4 KB on V1. Exceeding it fails with `ValidationException`. The documentation states this limit will be raised to match V1.
-- Your container must report healthy from `/ping` within 120 seconds of startup, or creation fails with a health check error. With the AgentCore SDK you get this for free: the server does not listen until `app.run()`, so the snapshot captures a fully initialized agent by construction.
+- The snapshot is captured once and shared by every restored microVM. Any value your agent generates at module scope is fixed at the time of the snapshot, so produce timestamps, credentials, random seeds and established connections inside the handler. For more information, see [Optimize your agent for Amazon Bedrock AgentCore Runtime V2](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-v2-optimize.html).
+- V2 limits the total size of your agent's environment variables to 1.5 KB for CodeZip and 2.5 KB for Container, against 4 KB on V1. Exceeding it fails with `ValidationException`. The documentation states this limit will be raised to match V1.
+- Your container must report healthy from `/ping` within 120 seconds of startup, or creation fails with a health check error. With the AgentCore SDK the server does not listen until `app.run()`, so the condition is met by construction and the snapshot captures a fully initialized agent.
 - If you run your own HTTP server instead of the AgentCore SDK, report healthy only after initialization completes.
-- Bring your own cryptographic libraries in a container? Use snapshot-safe builds so they reseed after a restore. On Amazon Linux 2023, use `openssl-snapsafe-libs`. The service-managed base image for direct code deployments already includes snapshot-safe builds.
+- Bringing your own cryptographic libraries in a container? Use snapshot-safe builds so they reseed after a restore. On Amazon Linux 2023, use `openssl-snapsafe-libs`. The service-managed base image for CodeZip already includes snapshot-safe builds.
 
 ## References
 
