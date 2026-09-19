@@ -77,7 +77,7 @@ pip install -r requirements.txt
 
 Run every command below from the repository root.
 
-## 0. Create the prerequisite resources
+## Step 0: Create the prerequisite resources
 
 ```bash
 python scripts/setup_prerequisites.py

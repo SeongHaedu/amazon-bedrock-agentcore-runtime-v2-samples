@@ -77,7 +77,7 @@ pip install -r requirements.txt
 
 以下のコマンドはすべてリポジトリのルートから実行します。
 
-## 0. 前提リソースの作成
+## 手順 0: 前提リソースの作成
 
 ```bash
 python scripts/setup_prerequisites.py
