@@ -131,7 +131,7 @@ def main():
     if first:
         print(f"新規セッションの初回 invoke: {[round(x) for x in sorted(first)]}", flush=True)
     if rest:
-        # 2 回目以降は既存の実行環境に着地するため、起動を含まない場合の下限になる。
+        # 2 回目以降は既存の実行環境に着地するため、起動を含まない場合の下限である。
         print(f"同一セッションの 2 回目以降: {[round(x) for x in sorted(rest)]}", flush=True)
 
     # 新規セッションごとに identity_uuid が変わるかどうかが V1 / V2 の分かれ目である。

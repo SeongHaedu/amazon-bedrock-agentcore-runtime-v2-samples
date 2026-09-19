@@ -3,7 +3,7 @@
 #
 # V1 -> V2 はスナップショット準備のため分単位かかる。V2 -> V1 は準備が不要なため数秒で終わる。
 # platformVersion を省略した更新でも、既存が V2 であれば V2 が維持され、スナップショット準備も
-# 実行される。つまりアーティファクト差し替えのような通常の更新も V2 では分単位になる。
+# 実行される。つまりアーティファクト差し替えのような通常の更新も V2 では分単位の時間がかかる。
 #
 # usage:
 #   python scripts/switch_platform_version.py <agentRuntimeId> <V1|V2|omit>
@@ -37,7 +37,7 @@ def main():
     if current["status"] not in ("READY",) and not current["status"].endswith("FAILED"):
         raise SystemExit(
             f"対象が終端状態ではない (status={current['status']})。"
-            " CREATING / UPDATING / DELETING の間に update を呼ぶと ConflictException になる。"
+            " CREATING / UPDATING / DELETING の間に update を呼ぶと ConflictException が返る。"
         )
 
     kwargs = dict(

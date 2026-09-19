@@ -56,7 +56,7 @@ print(
 
 @app.entrypoint
 async def invoke(payload, context):
-    # この print の時刻が pre-entrypoint の終点になる。クライアントの dispatched_at との差が
+    # この print の時刻が pre-entrypoint の終点である。クライアントの dispatched_at との差が
     # pre-entrypoint である。session_id を載せるのは、クライアント側の記録と突き合わせるためである。
     entrypoint_ts = time.time()
     session_id = getattr(context, "session_id", None)

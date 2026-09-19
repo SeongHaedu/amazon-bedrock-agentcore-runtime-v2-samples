@@ -169,7 +169,7 @@ python scripts/switch_platform_version.py <agentRuntimeId> V1     # 数秒
 python scripts/switch_platform_version.py <agentRuntimeId> omit   # 数分。V2 のまま維持される。
 ```
 
-update を呼ぶ前に、ランタイムが終端状態 (`READY` または `*_FAILED`) になっている必要があります。`CREATING` / `UPDATING` / `DELETING` の間に呼ぶと `ConflictException` になります。
+update を呼ぶ前に、ランタイムが終端状態 (`READY` または `*_FAILED`) である必要があります。`CREATING` / `UPDATING` / `DELETING` の間に呼ぶと `ConflictException` が返ります。
 
 ## 手順 6: 呼び出す
 

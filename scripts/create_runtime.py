@@ -7,7 +7,7 @@
 #
 # example:
 #   python scripts/create_runtime.py basic_v2 container V2      # V2 を明示して作成する
-#   python scripts/create_runtime.py basic_v1 container omit    # 省略して作成する (V1 になる)
+#   python scripts/create_runtime.py basic_v1 container omit    # 省略して作成する (V1 として作成される)
 import sys
 import time
 from pathlib import Path

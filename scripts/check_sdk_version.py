@@ -17,7 +17,7 @@ def version_tuple(version_str):
     """バージョン比較は tuple(int) で行う。文字列比較では "1.43.9" > "1.43.95" と誤判定する。
 
     split(".") ではなく数字だけを抽出するのは、リリース候補や開発ビルド ("1.44.0rc1"、
-    "1.43.96.dev0" 等) が入っている環境で int() が ValueError になるのを避けるためである。
+    "1.43.96.dev0" 等) が入っている環境で int() が ValueError を投げるのを避けるためである。
     このスクリプトは最初に実行するものであり、バージョン文字列の形で落ちてはならない。
     """
     return tuple(int(m) for m in re.findall(r"\d+", version_str))

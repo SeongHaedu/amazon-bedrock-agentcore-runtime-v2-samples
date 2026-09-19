@@ -11,7 +11,7 @@ from pathlib import Path
 import boto3
 from botocore.exceptions import ClientError
 
-# platformVersion に対応した最初の公開版である。これ未満では送信前に ParamValidationError になる。
+# platformVersion に対応した最初の公開版である。これ未満では送信前に ParamValidationError が返る。
 MIN_BOTO3 = "1.43.95"
 
 REGION = os.environ.get("AWS_REGION", "us-west-2")
@@ -32,7 +32,7 @@ ENTRY_POINT = [p.strip() for p in os.environ.get("AGENTCORE_ENTRY_POINT", "main.
 # os.environ.get の既定値ではなく or で落とすのは、AGENTCORE_NAME_PREFIX="" のように
 # 空文字列で export された場合にキーが存在してしまい、既定値が適用されないためである。
 # 空文字列だと "任意の名前".startswith("") が常に True になり、アカウント・リージョン内の
-# 全ランタイムが削除対象になる。cleanup_runtimes.py 側でも長さの下限を検証する。
+# 全ランタイムが削除対象に含まれる。cleanup_runtimes.py 側でも長さの下限を検証する。
 NAME_PREFIX = os.environ.get("AGENTCORE_NAME_PREFIX") or "v2sample_"
 
 # クリーンアップで要求するプレフィックスの最小長。短いプレフィックスは削除範囲が広がりすぎる。
