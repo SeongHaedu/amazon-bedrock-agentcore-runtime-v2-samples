@@ -3,7 +3,7 @@ English | [Japanese](README_JA.md)
 # Amazon Bedrock AgentCore Runtime V2: platformVersion Samples
 
 > [!NOTE]
-> This repository is not provided by AWS. It is a sample based on verification in one personal environment. Use it as a reference.
+> This repository is not provided by AWS. It is a sample based on verification in one personal environment. My opinions are my own.
 
 Sample code for trying out platform version V2 of Amazon Bedrock AgentCore Runtime. V2 starts your agent by restoring a snapshot of the environment, so cold starts stay consistent regardless of image size or concurrency. You enable it per agent runtime by setting `platformVersion` to `V2`; the default is `V1`.
 
