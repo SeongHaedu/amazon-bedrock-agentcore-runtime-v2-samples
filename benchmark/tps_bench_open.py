@@ -15,7 +15,10 @@ completions. The effective TPS and the dispatch span are always printed; check t
 the target on every run.
 
 usage:
-  python benchmark/tps_bench_open.py <agentRuntimeArn> <label> [tps] [duration_sec]
+  python benchmark/tps_bench_open.py <agentRuntimeId|agentRuntimeArn> <label> [tps] [duration_sec]
+
+invoke_agent_runtime takes the ARN. An id is accepted here as well and resolved with
+get_agent_runtime, so the runtime ids exported for build_breakdown.py can be reused as is.
 """
 import json
 import statistics
@@ -32,12 +35,26 @@ from botocore.config import Config  # noqa: E402
 
 from common import PROFILE, REGION, RESULTS_DIR  # noqa: E402
 
-USAGE = "usage: python benchmark/tps_bench_open.py <agentRuntimeArn> <label> [tps] [duration_sec]"
+USAGE = (
+    "usage: python benchmark/tps_bench_open.py "
+    "<agentRuntimeId|agentRuntimeArn> <label> [tps] [duration_sec]"
+)
 
 if len(sys.argv) < 3:
     raise SystemExit(USAGE)
 
-AGENT_RUNTIME_ARN = sys.argv[1]
+
+def resolve_arn(value: str) -> str:
+    """Accept either an id or an ARN. invoke_agent_runtime takes the ARN only, so an id is
+    resolved with a single get_agent_runtime call before the measurement starts."""
+    if value.startswith("arn:"):
+        return value
+    session = boto3.Session(profile_name=PROFILE) if PROFILE else boto3.Session()
+    control = session.client("bedrock-agentcore-control", region_name=REGION)
+    return control.get_agent_runtime(agentRuntimeId=value)["agentRuntimeArn"]
+
+
+AGENT_RUNTIME_ARN = resolve_arn(sys.argv[1])
 LABEL = sys.argv[2]
 TPS = int(sys.argv[3]) if len(sys.argv) > 3 else 5
 DURATION_SEC = int(sys.argv[4]) if len(sys.argv) > 4 else 20

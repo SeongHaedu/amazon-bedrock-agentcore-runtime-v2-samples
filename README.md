@@ -167,7 +167,11 @@ python scripts/create_runtime.py basic_v2 container V2
 
 Replace `container` with `codezip` if you built the ZIP. The third argument is the platform version: `V2`, `V1`, or `omit`.
 
+`omit` is not a value the API accepts. It means the request leaves the `platformVersion` field out entirely. The default is V1, so a runtime created with `omit` runs on V1, but it differs from passing `V1` explicitly in the `get_agent_runtime` response: with `omit` the `platformVersion` key is absent, and with an explicit `V1` it is present. Step 4 shows the difference.
+
 A V2 create prepares the environment and takes a snapshot, so it takes minutes rather than seconds. The script polls `get_agent_runtime` until the status is `READY` or ends in `FAILED`, and prints each status transition with its elapsed time.
+
+The same applies to updates. An update to a V2 runtime prepares a snapshot, so ordinary updates such as swapping the artifact also take minutes.
 
 To see the difference for yourself, create a V1 runtime from the same artifact.
 
@@ -183,9 +187,19 @@ python scripts/get_runtime.py
 
 `platformVersion` appears only in the `get_agent_runtime` response. The `create_agent_runtime`, `update_agent_runtime` and `list_agent_runtimes` responses do not carry it, so this script calls `get_agent_runtime` per runtime.
 
-Write your own checks as `resp.get("platformVersion", "V1")`. V1 is the default.
+The output also prints the runtime id and the ARN. Steps 6 and 7 need them, so keep them at hand.
 
-## Step 5: Migrate V1 to V2
+```
+[v2sample_basic_v2] status=READY platformVersion='V2' (key present: True) agentRuntimeVersion=1
+    id=v2sample_basic_v2-xxxxxxxxxx
+    arn=arn:aws:bedrock-agentcore:<region>:<account-id>:runtime/v2sample_basic_v2-xxxxxxxxxx
+```
+
+`key present` reports whether the `platformVersion` key was in the response at all. It is `False` for a runtime created with `omit` in step 3. Write your own checks as `resp.get("platformVersion", "V1")`. V1 is the default.
+
+## Step 5 (optional): Migrate V1 to V2
+
+If you created a V2 runtime directly in step 3, skip this step and go to step 6. Read this when you need to move an existing V1 runtime to V2.
 
 ```bash
 python scripts/switch_platform_version.py <agentRuntimeId> V2
@@ -196,14 +210,12 @@ python scripts/switch_platform_version.py <agentRuntimeId> V2
 Two behaviors are worth seeing directly.
 
 - `V2` to `V1` completes in seconds. No snapshot preparation is needed.
-- Omitting `platformVersion` on a runtime that is already V2 keeps it on V2 and still prepares a snapshot. Ordinary updates such as swapping the artifact therefore also take minutes on V2.
+- Omitting `platformVersion` on a runtime that is already V2 keeps it on V2 and still prepares a snapshot.
 
 ```bash
 python scripts/switch_platform_version.py <agentRuntimeId> V1     # seconds
 python scripts/switch_platform_version.py <agentRuntimeId> omit   # minutes, stays on V2
 ```
-
-The runtime must be in a terminal state (`READY` or `*_FAILED`) before you call update. Calling it during `CREATING` / `UPDATING` / `DELETING` returns `ConflictException`.
 
 ## Step 6: Invoke
 
@@ -230,9 +242,7 @@ This reproduces the distribution chart from the blog post: four series (CodeZip 
 
 Both V2 series sit on one narrow peak around 2 s regardless of deployment mode, while Container V1 spreads out to 7 - 8 s. Only `platformVersion` differs between the series; the artifact, Region, role and environment variables are identical.
 
-```bash
-pip install -r benchmark/requirements.txt
-```
+The matplotlib, numpy and scipy this step needs are in the root `requirements.txt`. No extra install is needed if you followed the setup.
 
 ### Build the benchmark agent and create one runtime per deployment mode
 
@@ -258,14 +268,14 @@ python scripts/create_runtime.py bench_codezip codezip omit
 
 Create both on V1 first. You will switch them to V2 and back, so that every series runs on the same artifact, Region, role and environment variables.
 
-Note the ids and ARNs from the output, then export them.
+Note the runtime ids from the output and export them. `python scripts/get_runtime.py` prints them too.
 
 ```bash
 export AGENTCORE_BENCH_CONTAINER_RUNTIME_ID=<container runtime id>
 export AGENTCORE_BENCH_CODEZIP_RUNTIME_ID=<codezip runtime id>
-ARN_CT=<container runtime arn>
-ARN_CZ=<codezip runtime arn>
 ```
+
+`benchmark/build_breakdown.py` reads these two from the environment. Every other script takes its target as an argument, so these two are the only environment variables you need.
 
 ### Measure V2, then switch back to V1 and measure again
 
@@ -273,15 +283,15 @@ ARN_CZ=<codezip runtime arn>
 # V2
 python benchmark/apply_config.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   keep V2 none codezip_v2_open
 python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V2 none container_v2_open
-python benchmark/tps_bench_open.py $ARN_CZ codezip_v2_open   5 20
-python benchmark/tps_bench_open.py $ARN_CT container_v2_open 5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   codezip_v2_open   5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID container_v2_open 5 20
 
 # V1. Wait 150 s after the switch so that the pre-warmed instances are replenished;
 # otherwise you measure a V1 that has no warm capacity and overstate the cold side.
 python benchmark/apply_config.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   keep V1 none codezip_v1_open && sleep 150
-python benchmark/tps_bench_open.py $ARN_CZ codezip_v1_open 5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID codezip_v1_open 5 20
 python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V1 none container_v1_open && sleep 150
-python benchmark/tps_bench_open.py $ARN_CT container_v1_open 5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID container_v1_open 5 20
 ```
 
 Check the `effective TPS` line each run. If it is far below the target, the load generator is being held back by something on your side and the V1 numbers will look better than they are. The reason is documented at the top of `benchmark/tps_bench_open.py`.
@@ -304,7 +314,7 @@ Set `GLOBAL_INIT_SECS` to add a sleep at module scope. On V1 it lands on the req
 
 ```bash
 python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V2 25 container_v2_gs25
-python benchmark/tps_bench_open.py $ARN_CT container_v2_gs25 5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID container_v2_gs25 5 20
 ```
 
 Keep the value below 120. Your container must report healthy within 120 seconds of startup, and this sleep runs before the server starts listening.
@@ -330,6 +340,7 @@ Deletion of the runtime itself takes seconds even on V2. The underlying snapshot
 - Your container must report healthy from `/ping` within 120 seconds of startup, or creation fails with a health check error. With the AgentCore SDK the server does not listen until `app.run()`, so the condition is met by construction and the snapshot captures a fully initialized agent.
 - If you run your own HTTP server instead of the AgentCore SDK, report healthy only after initialization completes.
 - Bringing your own cryptographic libraries in a container? Use snapshot-safe builds so they reseed after a restore. On Amazon Linux 2023, use `openssl-snapsafe-libs`. The service-managed base image for CodeZip already includes snapshot-safe builds.
+- The runtime must be in a terminal state (`READY` or `*_FAILED`) before you call `update_agent_runtime`. Calling it during `CREATING` / `UPDATING` / `DELETING` returns `ConflictException`.
 
 ## References
 

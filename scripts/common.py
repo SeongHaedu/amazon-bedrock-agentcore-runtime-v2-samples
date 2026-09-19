@@ -259,6 +259,8 @@ def describe_platform_version(client, agent_runtime_id):
         "key_present": "platformVersion" in resp,
         "status": resp.get("status"),
         "agent_runtime_version": resp.get("agentRuntimeVersion"),
+        # invoke_agent_runtime and the benchmark scripts take the ARN, not the id.
+        "agent_runtime_arn": resp.get("agentRuntimeArn"),
         "raw_response": jsonable(resp),
     }
 

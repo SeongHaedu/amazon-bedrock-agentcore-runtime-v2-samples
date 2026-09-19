@@ -167,7 +167,11 @@ python scripts/create_runtime.py basic_v2 container V2
 
 ZIP を作った場合は `container` を `codezip` に置き換えます。第 3 引数がプラットフォームバージョンで、`V2`、`V1`、`omit` のいずれかです。
 
+`omit` は API が受け取る値ではありません。リクエストに `platformVersion` フィールドそのものを含めないことを指します。既定値が V1 であるため `omit` で作ったランタイムは V1 で動きますが、`V1` を明示した場合との差が `get_agent_runtime` のレスポンスに現れます。`omit` で作ると `platformVersion` キーが存在せず、`V1` を明示すると存在します。手順 4 でこの差を確認できます。
+
 V2 の作成は環境の準備とスナップショットの取得を伴うため、秒ではなく分単位の時間がかかります。スクリプトは `get_agent_runtime` をポーリングし、`READY` または `FAILED` で終わる状態になるまで待ち、各ステータス遷移を経過時間とともに表示します。
+
+更新も同様です。V2 のランタイムへの更新はスナップショットの準備を伴うため、アーティファクトの差し替えのような通常の更新も分単位の時間がかかります。
 
 差を自分で確認する場合は、同じアーティファクトから V1 のランタイムも作成します。
 
@@ -183,9 +187,19 @@ python scripts/get_runtime.py
 
 `platformVersion` は `get_agent_runtime` のレスポンスにのみ含まれます。`create_agent_runtime`、`update_agent_runtime`、`list_agent_runtimes` のレスポンスには含まれないため、このスクリプトはランタイムごとに `get_agent_runtime` を呼びます。
 
-ご自身のコードで判定する場合は `resp.get("platformVersion", "V1")` の形で書いてください。V1 が既定値です。
+出力にはランタイム ID と ARN も表示されます。手順 6 と手順 7 で使うため、ここで控えておくと後の手順が楽になります。
 
-## 手順 5: V1 から V2 へ移行する
+```
+[v2sample_basic_v2] status=READY platformVersion='V2' (key present: True) agentRuntimeVersion=1
+    id=v2sample_basic_v2-xxxxxxxxxx
+    arn=arn:aws:bedrock-agentcore:<region>:<account-id>:runtime/v2sample_basic_v2-xxxxxxxxxx
+```
+
+`key present` は `platformVersion` キーがレスポンスに存在したかどうかです。手順 3 で `omit` を使って作ったランタイムでは `False` になります。ご自身のコードで判定する場合は `resp.get("platformVersion", "V1")` の形で書いてください。V1 が既定値です。
+
+## 手順 5 (任意): V1 から V2 へ移行する
+
+手順 3 で V2 のランタイムを直接作成した場合は、この手順を飛ばして手順 6 に進めます。既存の V1 ランタイムを V2 に移行する場合に読んでください。
 
 ```bash
 python scripts/switch_platform_version.py <agentRuntimeId> V2
@@ -196,14 +210,12 @@ python scripts/switch_platform_version.py <agentRuntimeId> V2
 直接確認する価値のある挙動が 2 つあります。
 
 - `V2` から `V1` への切り戻しは数秒で完了します。スナップショットの準備が不要なためです。
-- 既に V2 のランタイムに対して `platformVersion` を省略した更新を行うと、V2 が維持されたうえでスナップショットの準備も実行されます。したがってアーティファクトの差し替えのような通常の更新も、V2 では分単位の時間がかかります。
+- 既に V2 のランタイムに対して `platformVersion` を省略した更新を行うと、V2 が維持されたうえでスナップショットの準備も実行されます。
 
 ```bash
 python scripts/switch_platform_version.py <agentRuntimeId> V1     # 数秒
 python scripts/switch_platform_version.py <agentRuntimeId> omit   # 数分。V2 のまま維持される。
 ```
-
-update を呼ぶ前に、ランタイムが終端状態 (`READY` または `*_FAILED`) である必要があります。`CREATING` / `UPDATING` / `DELETING` の間に呼ぶと `ConflictException` が返ります。
 
 ## 手順 6: 呼び出す
 
@@ -230,9 +242,7 @@ python scripts/invoke_runtime.py <agentRuntimeId|agentRuntimeArn> 3 2
 
 V2 の 2 系列はデプロイ方式に関係なく 2 秒付近の 1 つの狭いピークに収まり、Container V1 は 7 - 8 秒まで広がります。系列間で異なるのは `platformVersion` だけで、アーティファクト・リージョン・ロール・環境変数は同一です。
 
-```bash
-pip install -r benchmark/requirements.txt
-```
+この手順で使う matplotlib・numpy・scipy はルートの `requirements.txt` に含まれています。セットアップを済ませていれば追加のインストールは不要です。
 
 ### 計測対象をビルドし、デプロイ方式ごとにランタイムを作る
 
@@ -258,14 +268,14 @@ python scripts/create_runtime.py bench_codezip codezip omit
 
 どちらも先に V1 で作ります。この後で V2 に切り替えて戻すことで、4 系列がすべて同じアーティファクト・リージョン・ロール・環境変数で走ります。
 
-出力に表示されるランタイム ID と ARN を控えて、環境変数に設定します。
+出力に表示されるランタイム ID を環境変数に設定します。`python scripts/get_runtime.py` でも確認できます。
 
 ```bash
 export AGENTCORE_BENCH_CONTAINER_RUNTIME_ID=<container のランタイム ID>
 export AGENTCORE_BENCH_CODEZIP_RUNTIME_ID=<codezip のランタイム ID>
-ARN_CT=<container のランタイム ARN>
-ARN_CZ=<codezip のランタイム ARN>
 ```
+
+この 2 つは `benchmark/build_breakdown.py` が環境変数として読みます。他のスクリプトは引数で受け取るため、環境変数は上記の 2 つだけです。
 
 ### V2 で測り、V1 に戻して測る
 
@@ -273,15 +283,15 @@ ARN_CZ=<codezip のランタイム ARN>
 # V2
 python benchmark/apply_config.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   keep V2 none codezip_v2_open
 python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V2 none container_v2_open
-python benchmark/tps_bench_open.py $ARN_CZ codezip_v2_open   5 20
-python benchmark/tps_bench_open.py $ARN_CT container_v2_open 5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   codezip_v2_open   5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID container_v2_open 5 20
 
 # V1。切り替えてから 150 秒待つ。pre-warmed instance の補充を待たずに測ると、
 # ウォームな容量が無い状態の V1 を測ることになり、コールド側を過大に見積もる。
 python benchmark/apply_config.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID   keep V1 none codezip_v1_open && sleep 150
-python benchmark/tps_bench_open.py $ARN_CZ codezip_v1_open 5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CODEZIP_RUNTIME_ID codezip_v1_open 5 20
 python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V1 none container_v1_open && sleep 150
-python benchmark/tps_bench_open.py $ARN_CT container_v1_open 5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID container_v1_open 5 20
 ```
 
 実行ごとに `effective TPS` の行をご確認ください。目標を大きく下回っている場合、クライアント側の何かが投入を妨げており、V1 の数値が実態より良く出ます。理由は `benchmark/tps_bench_open.py` の冒頭に記載しています。
@@ -304,7 +314,7 @@ python benchmark/plot_preentry.py open
 
 ```bash
 python benchmark/apply_config.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID keep V2 25 container_v2_gs25
-python benchmark/tps_bench_open.py $ARN_CT container_v2_gs25 5 20
+python benchmark/tps_bench_open.py $AGENTCORE_BENCH_CONTAINER_RUNTIME_ID container_v2_gs25 5 20
 ```
 
 値は 120 より小さく保ってください。コンテナは起動から 120 秒以内に healthy を報告する必要があり、このスリープはサーバが listen を開始する前に走ります。
@@ -330,6 +340,7 @@ python scripts/cleanup.py --yes --keep-resources # ランタイムのみ削除�
 - コンテナは起動から 120 秒以内に `/ping` で healthy を報告する必要があります。間に合わない場合、ヘルスチェックのエラーで作成が失敗します。AgentCore SDK を使う場合は `app.run()` までサーバが listen しないため、この条件は自動的に満たされ、スナップショットは完全に初期化されたエージェントを捉えます。
 - AgentCore SDK ではなく独自の HTTP サーバを動かす場合は、初期化が完了してから healthy を返してください。
 - Container で独自の暗号ライブラリを持ち込む場合は、復元後に再シードする snapshot-safe なビルドをご利用ください。Amazon Linux 2023 では `openssl-snapsafe-libs` を使います。CodeZip のサービス管理ベースイメージには snapshot-safe なビルドが既に含まれています。
+- `update_agent_runtime` を呼ぶ前に、ランタイムが終端状態 (`READY` または `*_FAILED`) である必要があります。`CREATING` / `UPDATING` / `DELETING` の間に呼ぶと `ConflictException` が返ります。
 
 ## 参考
 
